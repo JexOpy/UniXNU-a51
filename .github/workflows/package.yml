@@ -91,7 +91,8 @@ jobs:
           UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          scripts/package.sh --os "${{ inputs.os }}" --uefi ../uefi-a51
+          UEFI_ABS="$(cd ../uefi-a51 && pwd)"
+          UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
 
       - name: Pack Odin tar
         working-directory: device
