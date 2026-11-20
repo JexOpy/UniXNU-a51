@@ -32,6 +32,7 @@ findings = [
   "feeds.toml now pins https://github.com/JexOpy/UniXNU-exynos9611-common.git at commit e034227aa7aa1ee9b1a5182b91f8c49e4e72f3f7 (including sheng-platform-power.patch context hunk required by upstream ipados-17 zzz-boot-progress.patch), and GitHub Actions workflows default to JexOpy repositories.",
   "board.toml [kernel] archives explicitly lists component:RamBlock alongside the arm64 profile archives so unixnu tree validates all selected kernel components.",
   "package.yml passes an absolute UEFI checkout path via --uefi and UNIXNU_UEFI so patch-xnu-entry-probe.py locates FrameBufferSerialPortLib/Font.h for panic_screen.",
+  "board.toml sets payload.panic_screen = false because Sota4Ever/Mu-Silicium ships Font5x16.h instead of GLYPH_FONT Font.h; XNU boot progress still renders via zzz-boot-progress.patch.",
 ]
 completion = [
   "All four configuration layers resolve cleanly in unixnu status --json with pinned Git commits in feeds.toml and unixnu.lock.",

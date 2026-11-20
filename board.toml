@@ -127,7 +127,7 @@ size_mib = 128
 loader = "firmware"
 title = "UniXNU (SM-A515F)"
 timeout = 10
-panic_screen = true
+panic_screen = false
 kernel_args = [
   "-v",
   "serial=3",
