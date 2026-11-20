@@ -21,7 +21,7 @@ on:
         description: "UEFI repository (OWNER/uefi-a51)"
         type: string
         required: true
-        default: "OWNER/uefi-a51"
+        default: "JexOpy/uefi-a51"
       uefi_ref:
         description: "UEFI branch or commit"
         type: string

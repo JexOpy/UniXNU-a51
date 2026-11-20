@@ -1,16 +1,8 @@
 # Module feeds for Samsung Galaxy A51 (SM-A515F / a51).
-#
-# During local development, `local` points to the sibling SoC checkout.
-# Before publishing to GitHub and running GitHub Actions CI, push
-# UniXNU-exynos9611-common and replace `local` with `git` + a 40-char `commit`:
-#
-#   [[source]]
-#   name = "exynos9611"
-#   kind = "soc"
-#   git = "https://github.com/<OWNER>/UniXNU-exynos9611-common.git"
-#   commit = "<40-character-commit-sha>"
+# Local machines can copy local.toml.example -> local.toml to override with ../UniXNU-exynos9611-common.
 
 [[source]]
 name = "exynos9611"
 kind = "soc"
-local = "../UniXNU-exynos9611-common"
+git = "https://github.com/JexOpy/UniXNU-exynos9611-common.git"
+commit = "30f910b0f03294dfc98c58568469d1ed620d05a1"

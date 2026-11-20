@@ -14,7 +14,7 @@ on:
         description: "UEFI repository (OWNER/uefi-a51)"
         type: string
         required: true
-        default: "OWNER/uefi-a51"
+        default: "JexOpy/uefi-a51"
       uefi_ref:
         description: "UEFI branch or commit"
         type: string
@@ -24,7 +24,7 @@ on:
         description: "SoC repository (OWNER/UniXNU-exynos9611-common)"
         type: string
         required: true
-        default: "OWNER/UniXNU-exynos9611-common"
+        default: "JexOpy/UniXNU-exynos9611-common"
       soc_ref:
         description: "SoC branch or commit"
         type: string

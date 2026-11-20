@@ -29,16 +29,17 @@ procedure = [
 findings = [
   "Exynos 9611 uses ARMv8.0-A Cortex-A53 and Cortex-A73 cores; ARMv8.1 PAN must be disabled in configs/exynos9611.config and arm64e profiles (iOS/macOS 27) are unsupported.",
   "Samsung S-Boot does not expose fastboot; images must be flashed via Odin tar archives or TWRP block writes to boot or recovery.",
+  "feeds.toml now pins https://github.com/JexOpy/UniXNU-exynos9611-common.git at commit 30f910b0f03294dfc98c58568469d1ed620d05a1, and GitHub Actions workflows default to JexOpy repositories.",
 ]
 completion = [
   "All four configuration layers resolve cleanly in unixnu status --json with pinned Git commits in feeds.toml and unixnu.lock.",
   "Porting record workflow passes on GitHub Actions.",
 ]
 limits = [
-  "feeds.toml currently points to local ../UniXNU-exynos9611-common; publish UniXNU-exynos9611-common and replace with git + 40-char commit before running remote CI.",
+  "unixnu.lock has not been generated yet via unixnu fetch after remote repositories are pushed.",
 ]
 next_action = [
-  "Publish UniXNU-exynos9611-common and uefi-a51 to GitHub, pin their commit SHAs in feeds.toml and .github/workflows/, and run unixnu fetch to generate unixnu.lock.",
+  "Push UniXNU-exynos9611-common, uefi-a51, and UniXNU-a51 to JexOpy on GitHub and run uefi-bringup.yml.",
 ]
 evidence = []
 
