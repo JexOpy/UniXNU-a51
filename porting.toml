@@ -33,7 +33,7 @@ findings = [
   "board.toml [kernel] archives explicitly lists component:RamBlock alongside the arm64 profile archives so unixnu tree validates all selected kernel components.",
   "package.yml passes an absolute UEFI checkout path via --uefi and UNIXNU_UEFI so patch-xnu-entry-probe.py locates FrameBufferSerialPortLib/Font.h for panic_screen.",
   "board.toml sets payload.panic_screen = false because Sota4Ever/Mu-Silicium ships Font5x16.h instead of GLYPH_FONT Font.h; XNU boot progress still renders via zzz-boot-progress.patch.",
-  "board.toml [firmware] packages appends {uefi}/Mu_Basecore after {edk2} so legacy SiliciumPkg.dsc.inc library paths such as ArmPkg/Library/ArmLib/ArmBaseLib.inf resolve cleanly.",
+  "board.toml [firmware] packages places {uefi}/Mu_Basecore before {edk2} (with Timer/Auth-Service/Usb-Bus patches applied in package.yml) so Sota4Ever/Mu-Silicium builds against its matched Mu_Basecore.",
 ]
 completion = [
   "All four configuration layers resolve cleanly in unixnu status --json with pinned Git commits in feeds.toml and unixnu.lock.",

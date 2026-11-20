@@ -92,6 +92,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           UEFI_ABS="$(cd ../uefi-a51 && pwd)"
+          for p in Timer.patch Auth-Service.patch Usb-Bus.patch; do
+            git -C "$UEFI_ABS/Mu_Basecore" apply --check "$UEFI_ABS/Resources/MuPatches/$p" && \
+              git -C "$UEFI_ABS/Mu_Basecore" apply "$UEFI_ABS/Resources/MuPatches/$p"
+          done
           UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
 
       - name: Pack Odin tar
