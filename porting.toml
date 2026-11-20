@@ -30,6 +30,7 @@ findings = [
   "Exynos 9611 uses ARMv8.0-A Cortex-A53 and Cortex-A73 cores; ARMv8.1 PAN must be disabled in configs/exynos9611.config and arm64e profiles (iOS/macOS 27) are unsupported.",
   "Samsung S-Boot does not expose fastboot; images must be flashed via Odin tar archives or TWRP block writes to boot or recovery.",
   "feeds.toml now pins https://github.com/JexOpy/UniXNU-exynos9611-common.git at commit 30f910b0f03294dfc98c58568469d1ed620d05a1, and GitHub Actions workflows default to JexOpy repositories.",
+  "board.toml [kernel] archives explicitly lists component:RamBlock alongside the arm64 profile archives so unixnu tree validates all selected kernel components.",
 ]
 completion = [
   "All four configuration layers resolve cleanly in unixnu status --json with pinned Git commits in feeds.toml and unixnu.lock.",
