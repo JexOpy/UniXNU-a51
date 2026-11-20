@@ -1,0 +1,469 @@
+schema_version = 1
+
+[device]
+name = "a51"
+soc = "Exynos 9611"
+os_profile = "ipados-17.7.11-21H461"
+summary = "Samsung Galaxy A51 (SM-A515F, Exynos 9611 / S5E9611, 6 GB / 128 GB UFS, bootloader A515FXXU8HWI1): Phase-0 hardware inventory measured on-device; Format 2 scaffold and uefi-a51 ready for Stage-1 CI build."
+
+[[area]]
+id = "configuration"
+status = "planned"
+components = ["ArmDTPlatform", "SoftwareAES"]
+paths = ["board.toml", "feeds.toml", "configs/**", "local.toml.example", ".gitmodules", ".github/**", ".gitignore"]
+inputs = [
+  "Samsung Exynos 9611 (S5E9611) shares exynos9610.dts register map (Exynos9611Development/android_kernel_samsung_universal9611 commit 23f87fb36310eee5e8ec5e27a3a0cd089209cbb4).",
+  "Target OS profile ipados-17.7.11-21H461 (iPad7,1 arm64) selected because Cortex-A53/A73 are ARMv8.0-A without PAC/arm64e.",
+  "SoC profile provided by UniXNU-exynos9611-common (pinned via feeds.toml; local path during initial development).",
+]
+configuration = [
+  "board.toml: schema_version = 2, board.name = 'a51', board.soc = 'Exynos 9611', board.soc_source = 'exynos9611', board.os_profile = 'ipados-17.7.11-21H461'.",
+  "configs/a51_defconfig sets CONFIG_XNU_NATIVE_PAN=n, CONFIG_XNU_ARM_DT_PLATFORM=y, CONFIG_XNU_ARMCPU=y, CONFIG_XNU_NATIVE_AES=y.",
+  "config_fragments order: arch:configs/common.config -> soc:configs/exynos9611.config -> os:configs/ipados.config -> a51_defconfig.",
+]
+procedure = [
+  "Run ./unixnu defconfig a51_defconfig -D ../UniXNU-a51 from the UniXNU checkout.",
+  "Run ./unixnu fetch -D ../UniXNU-a51, ./unixnu status --json -D ../UniXNU-a51, and ./unixnu tree -D ../UniXNU-a51.",
+  "Run python3 scripts/porting-record.py check --device ../UniXNU-a51.",
+]
+findings = [
+  "Exynos 9611 uses ARMv8.0-A Cortex-A53 and Cortex-A73 cores; ARMv8.1 PAN must be disabled in configs/exynos9611.config and arm64e profiles (iOS/macOS 27) are unsupported.",
+  "Samsung S-Boot does not expose fastboot; images must be flashed via Odin tar archives or TWRP block writes to boot or recovery.",
+]
+completion = [
+  "All four configuration layers resolve cleanly in unixnu status --json with pinned Git commits in feeds.toml and unixnu.lock.",
+  "Porting record workflow passes on GitHub Actions.",
+]
+limits = [
+  "feeds.toml currently points to local ../UniXNU-exynos9611-common; publish UniXNU-exynos9611-common and replace with git + 40-char commit before running remote CI.",
+]
+next_action = [
+  "Publish UniXNU-exynos9611-common and uefi-a51 to GitHub, pin their commit SHAs in feeds.toml and .github/workflows/, and run unixnu fetch to generate unixnu.lock.",
+]
+evidence = []
+
+[[area]]
+id = "firmware"
+status = "planned"
+components = ["DarwinBoot"]
+paths = ["proprietary-files.txt", "package/.gitkeep"]
+inputs = [
+  "UEFI base repository uefi-a51 derived from Sota4Ever/Mu-Silicium (branch send, commit 832879febad7fa3893c9becdc113c35a97f15608), which reaches BDS on Galaxy A50 (S5E9610Pkg).",
+  "SM-A515F hardware differences vs A50: 1080x2400 panel (s6e3fa9/ea8076), Exynos 9611, 6 GB RAM / 128 GB UFS, same gpio_keys pins (gpa1-5/6/7) and S2MPU09 PMIC.",
+  "Samsung Galaxy A51 boot image geometry from LineageOS/TWRP BoardConfig.mk: base=0x10000000, pagesize=2048, boot=61865984 B, recovery=71106560 B.",
+]
+configuration = [
+  "board.toml [firmware]: dsc = Platforms/Samsung/a51Pkg/a51.dsc, config = a51, FD 3 MiB at 0xC9000000, stack at 0xC9300000, ENABLE_SECUREBOOT=0, UNIXNU_PAYLOAD=1.",
+  "board.toml [firmware] patches include Resources/MuPatches/Timer.patch (26 MHz CNTFRQ_EL0 fallback), Auth-Service.patch, and Usb-Bus.patch.",
+  "uefi-a51 patches BootShim.S (FD_SIZE + (_Payload - _Head) + cache clean) and SiliciumPkg Sec (EntryArg HOB DAEE82E6-8090-4E72-BFB9-78C13CD4E359 for UniXNURamDiskDxe).",
+]
+procedure = [
+  "Build standalone Stage-1 UEFI via GitHub Actions workflow uefi-bringup.yml (or ./unixnu build firmware --uefi ../uefi-a51).",
+  "Pack output image into Odin recovery.tar using scripts/pack-odin-tar.py and boot recovery on unlocked SM-A515F.",
+  "Confirm UEFI display output, volume/power keypad navigation, UFS block enumeration, and UniXNU boot menu entry discovery.",
+]
+findings = [
+  "Sota4Ever/Mu-Silicium BootShim.S sets ARM64 Image Size to FD_SIZE alone and lacks cache cleaning before branching to FD_BASE; updated in uefi-a51 to match UniXNU bootimg.py checks.",
+  "Sota4Ever/Mu-Silicium SiliciumPkg Sec does not publish S-Boot's x0 FDT pointer HOB; patched in uefi-a51 so UniXNURamDiskDxe can locate /chosen/linux,initrd-start/end.",
+  "Phase-0 dump on SM-A515F (bootloader A515FXXU8HWI1) confirmed stock boot and recovery use Android header_version = 2 with a Samsung DT_TABLE (magic 0xd7b7ab1e) in --dtb (135,232 B) plus a 476,800 B --recovery_dtbo in recovery, and load initrd at physical 0x89000000.",
+  "Resources/Configs/a51.toml sets header_version = 2 and dtb_location = 'outside' with Resources/DTBs/a51.dtb, while defining both base/size and fd_base/fd_size.",
+]
+completion = [
+  "SILICIUM_UEFI.fd builds cleanly on CI and reaches the UniXNU menu on physical SM-A515F with working GOP display and keypad input.",
+  "UniXNURamDiskDxe mounts the FAT payload volume and DarwinBoot loads kernel.macho and kernel.macho.adt.",
+]
+limits = [
+  "uefi-a51 has not been compiled on CI or booted on physical SM-A515F hardware yet.",
+]
+next_action = [
+  "Push UniXNU-exynos9611-common, UniXNU-a51, and uefi-a51 to GitHub, run uefi-bringup.yml, repack recovery with scripts/pack-sboot-v2.py using phase0 stock-recovery.img donor, and test booting recovery on SM-A515F.",
+]
+evidence = []
+
+[[area]]
+id = "cpu"
+status = "planned"
+components = ["ArmCpu"]
+paths = ["dts/a51.dts"]
+inputs = [
+  "Exynos 9611 CPU topology from exynos9610.dts: cluster 0 = 4x Cortex-A53 (MPIDR 0x0..0x3), cluster 1 = 4x Cortex-A73 (MPIDR 0x100..0x103).",
+  "Interrupt controller: ARM GIC-400 (GICv2) at GICD 0x12301000 (0x1000), GICC 0x12302000 (0x1000), GICH 0x12304000 (0x2000), GICV 0x12306000 (0x2000).",
+  "ARMv8 generic timer at 26 MHz (PPIs 13/14/11/10); PSCI 0.2 via SMC (suspend=0xC4000001, off=0x84000002, on=0xC4000003).",
+]
+configuration = [
+  "UniXNU-exynos9611-common/dts/exynos9611.dtsi defines cpu0 enabled and cpu1..cpu7 disabled for initial single-core bring-up.",
+  "GIC node exports unixnu,adt-name = 'intc' and intentionally omits self-interrupts to avoid XNU IODTFindInterruptParent NULL dereference.",
+  "CONFIG_XNU_NATIVE_PAN=n and CONFIG_XNU_ARMCPU=y.",
+]
+procedure = [
+  "Verify single-core boot on cpu0 with GIC-400 interrupt initialization and 26 MHz timer ticks.",
+  "After cpu0 reaches launchd or kernel shell checkpoint, enable cpu1..cpu7 in dts/a51.dts and verify PSCI CPU_ON and IPIs.",
+]
+findings = [
+  "Upstream UniXNU/ArmCpu targets GICv3; Exynos 9611 uses GIC-400 (GICv2), matching the same GICv2 gap documented on Exynos 9825 (d1x), Exynos 8890 (hero2lte), and Exynos 7870 (gtaxllte).",
+  "Samsung S-Boot does not program CNTFRQ_EL0; XNU and UEFI must rely on the 26 MHz DT/PCD rate.",
+]
+completion = [
+  "Boot CPU (cpu0) handles timer IRQs and GIC-400 interrupts without panicking.",
+  "All 8 cores (4x A53 + 4x A73) come online via PSCI SMC and deliver IPIs.",
+]
+limits = [
+  "GICv2 (GIC-400) support for ArmCpu is not yet implemented for Exynos 9611.",
+  "SMP (cpu1..cpu7) is disabled in DTS until single-core bring-up succeeds.",
+]
+next_action = [
+  "Add GIC-400 (GICv2) support patch for ArmCpu in UniXNU-exynos9611-common/patches/xnu/ after UEFI menu bring-up succeeds.",
+]
+evidence = []
+
+[[area]]
+id = "memory"
+status = "planned"
+components = []
+paths = ["dts/**"]
+inputs = [
+  "6 GB SM-A515F DRAM topology from exynos9610.dts and S5E9610Pkg MemoryMapLib.c: low 2 GiB bank at 0x80000000 (with TZ holes at 0xBAB00000-0xC0000000 and 0xE0000000-0xE1900000) plus 4 GiB high RAM at 0x880000000-0x980000000.",
+  "Reserved memory regions from exynos9610-rmem.dtsi: abox (0xE9400000), modem_if (0xED000000), cp_ram_logging (0xF5A00000), chub (0xFD000000).",
+]
+configuration = [
+  "dts/a51.dts exposes one contiguous 650 MiB low-RAM window 0x92000000..0xBAA00000 (above S-Boot initrd 0x89000000 and sec_debug_next 0x91202000..0x91B88000, below TZ hole 0xBAB00000).",
+  "board.toml [payload.adt] owned_memory_size = '0x20000000' (512 MiB initial XNU owned window).",
+  "uefi-a51 MemoryMapLib.c reserves Payload RAM disk (0x89000000, 72 MiB), SEC Debug Logs (0x91200000), TZ holes, UEFI Heap/FD/Stack, Display Reserved (0xCA000000, 20 MiB), Camera, ABOX, Modem, ESS, GNSS, and CHUB regions.",
+]
+procedure = [
+  "Cross-check Phase-0 /proc/iomem and /sys/firmware/fdt banks against dts/a51.dts and uefi-a51 MemoryMapLib.c.",
+  "Validate ADT generation with dtc and scripts/make-adt.py on CI.",
+]
+findings = [
+  "Phase-0 /proc/iomem and /sys/firmware/fdt on physical SM-A515F confirmed exact RAM banks: 0x80000000-0xBAAFFFFF, 0xC0000000-0xDFFFFFFF, 0xE1900000-0xFFFFFFFF, and 4 GiB high RAM 0x880000000-0x97FFFFFFF (with el2_earlymem at 0x97DE00000).",
+  "Confirmed exact TZ holes 0xBAB00000-0xC0000000 (85 MiB) and 0xE0000000-0xE1900000 (25 MiB), plus live S-Boot linux,initrd-start=0x89000000 and sec_debug_next 0x91202000-0x91B88000.",
+  "UniXNU devicetree.py rejects multi-bank /memory nodes; initial bring-up targets the clean 0x92000000-0xBAA00000 span before adopting 4 GiB high RAM.",
+]
+completion = [
+  "All SM-A515F physical RAM banks and secure holes are verified from on-device /proc/iomem.",
+  "DarwinBoot allocates the XNU owned memory window cleanly without touching reserved carveouts.",
+]
+limits = [
+  "High 4 GiB DRAM (0x880000000+) is not yet adopted into XNU.",
+]
+next_action = [
+  "Compile dts/a51.dts to DTB/ADT on CI and verify UEFI MemoryMapLib boots without MMU faults on SM-A515F.",
+]
+evidence = []
+
+[[area]]
+id = "storage"
+status = "planned"
+components = ["RamBlock"]
+paths = ["scripts/*userdata*", "scripts/*ufs*", "scripts/*storage*"]
+inputs = [
+  "Exynos 9611 UFS 2.0 controller from exynos9610.dts: HCI 0x13520000, VS 0x13521100, UniPro 0x13510000, PHY 0x13530000; 128 GB UFS with 4096-byte logical blocks.",
+  "UEFI UFS driver already implemented in uefi-a51 (SamsungPkg/Drivers/UfsDxe + S5E9610Pkg/Library/PlatformUfsLib with UfsCal.c).",
+  "MicroSD host: dwmmc_2 at 0x13550000.",
+]
+configuration = [
+  "board.toml [components] includes RamBlock for initial RAM-backed writable Data seed bring-up.",
+  "board.toml [userdata] measured from SM-A515F /dev/block/sda (sda32): first_lba = 2061568, last_lba = 31234303, lba_bytes = 4096 (111.3 GiB).",
+  "dts/exynos9611.dtsi keeps ufs@13520000 disabled until an XNU Exynos UFS driver is built.",
+]
+procedure = [
+  "Verify UEFI UfsDxe enumerates SM-A515F UFS LUN0 (/dev/block/sda, 31,236,096 sectors x 4096 B) in UEFI shell / UniXNU menu.",
+  "Port or write a native XNU Exynos UFSHCI block driver (13520000.ufs) to mount OS/SystemOS windows from userdata.",
+]
+findings = [
+  "Phase-0 sgdisk dump on SM-A515F confirmed 128 GB UFS 2.0 LUN0 (/dev/block/sda, 4096-byte logical/physical blocks): boot sda12 = 27792..42895 (59.0 MiB), recovery sda13 = 42896..60255 (67.8 MiB), userdata sda32 = 2061568..31234303 (111.3 GiB).",
+  "S5E9610Pkg PlatformUfsLib references CMU_FSYS registers at 0x13400160/0x13401850; uefi-a51 MemoryMapLib.c explicitly maps CMU FSYS (0x13400000) and UFS PHY (0x13530000) to avoid MMU faults.",
+  "UniXNU ShengUfs is Qualcomm SM8550-specific and cannot be reused directly on Exynos UFSHCI.",
+]
+completion = [
+  "UEFI UfsDxe reads SM-A515F GPT partitions cleanly.",
+  "XNU storage driver exposes userdata OS/SystemOS windows and boots launchd from APFS with persistent Data.",
+]
+limits = [
+  "No native XNU Exynos UFS driver exists yet; initial kernel bring-up uses RamBlock.",
+]
+next_action = [
+  "Verify UEFI UfsDxe partition discovery during Stage-1 UEFI bring-up on SM-A515F.",
+]
+evidence = []
+
+[[area]]
+id = "display"
+status = "planned"
+components = ["GopFramebuffer"]
+paths = ["package/*Display*", "package/*Framebuffer*"]
+inputs = [
+  "SM-A515F Super AMOLED panels (display-lcd_a51_common.dtsi): s6e3fa9 / ea8076, 1080x2400 @ 60 Hz, 32 bpp (stride 4320 bytes, ~9.89 MiB per frame).",
+  "Display controller: DECON-F at 0x148B0000; S5E9610Pkg PlatformSec.c writes 0x1281 to HW_SW_TRIG_CONTROL (+0x70) to enable continuous framebuffer scanout.",
+  "Expected bootloader framebuffer base: 0xCA000000 (20 MiB Display Reserved), to be confirmed on SM-A515F.",
+]
+configuration = [
+  "uefi-a51 a51.dsc sets PcdFrameBufferWidth=1080, PcdFrameBufferHeight=2400, PcdFrameBufferColorDepth=32 with SimpleFbDxe.",
+  "board.toml [components] includes GopFramebuffer and sets payload.panic_screen = true for early framebuffer diagnostics.",
+]
+procedure = [
+  "Verify stock SM-A515F framebuffer address and stride from /proc/iomem and dmesg in PHASE0.",
+  "Confirm SimpleFbDxe renders clear text/menu on SM-A515F in Stage-1 UEFI.",
+  "Wire GopFramebuffer into XNU early console, panic screen, and IOMobileFramebuffer CPU presentation.",
+]
+findings = [
+  "Phase-0 dump on SM-A515F confirmed s3cfb.bootloaderfb=0xCA000000, panel ID SDC_800042 (lcdtype=0x800042), 1080x2400 @ 32 bpp (double-buffered virtual_size 1080x4800), matching uefi-a51 Display Reserved 0xCA000000 (20 MiB).",
+  "Galaxy A51 panel resolution is 1080x2400 (20:9), taller than Galaxy A50's 1080x2340; a51.dsc sets PcdFrameBufferHeight=2400 accordingly.",
+]
+completion = [
+  "UEFI SimpleFbDxe and UniXNU boot menu render without tearing or stride corruption on SM-A515F.",
+  "XNU framebuffer console, panic screen, and IOMobileFramebuffer presentation draw on the panel.",
+]
+limits = [
+  "SimpleFbDxe output has not yet been tested on physical SM-A515F hardware.",
+  "Backlight and DSI panel re-initialization are not yet implemented; relies on S-Boot pre-initialized panel.",
+]
+next_action = [
+  "Flash Stage-1 UEFI DEBUG image to recovery and verify SimpleFbDxe text rendering on SM-A515F.",
+]
+evidence = []
+
+[[area]]
+id = "input"
+status = "planned"
+components = []
+paths = ["package/*Touch*", "package/*Input*"]
+inputs = [
+  "Hardware buttons from exynos9611-a51_common.dtsi: Volume Up = gpa1-5, Volume Down = gpa1-6, Power = gpa1-7 (identical to Galaxy A50).",
+  "Touchscreen controller from exynos9611-a51_common.dtsi: Melfas MSS100 (compatible = 'melfas,mms_ts') on i2c_4 (0x13870000) at I2C address 0x48, IRQ gpa0-0, regulator tsp_ldo_en on gpg3-1, 1080x2400 mapped from 0..4095.",
+]
+configuration = [
+  "uefi-a51 a51Pkg/Library/KeypadDeviceLib maps gpa1-5 (SCAN_UP), gpa1-6 (SCAN_DOWN), and gpa1-7 (CHAR_CARRIAGE_RETURN / long-press ESC) for UEFI menu control.",
+  "dts/exynos9611.dtsi declares i2c_4@13870000 disabled pending XNU HSI2C + Melfas touch driver.",
+]
+procedure = [
+  "Test Volume Up, Volume Down, and Power navigation in UEFI/UniXNU menu on SM-A515F.",
+  "After XNU reaches userland, implement Exynos HSI2C bus + Melfas MSS100 IOHIDDevice driver.",
+]
+findings = [
+  "Galaxy A51 shares the exact same side-key GPIO bank and pins (gpa1-5/6/7) as Galaxy A50, allowing direct reuse of KeypadDeviceLib logic.",
+]
+completion = [
+  "Physical volume and power buttons reliably navigate UEFI and UniXNU menus.",
+  "Melfas MSS100 multi-touch events map accurately to 1080x2400 iPadOS display coordinates.",
+]
+limits = [
+  "No XNU HSI2C or Melfas MSS100 touchscreen driver exists yet.",
+]
+next_action = [
+  "Confirm side-button responsiveness during Stage-1 UEFI bring-up on SM-A515F.",
+]
+evidence = []
+
+[[area]]
+id = "gpu"
+status = "planned"
+components = []
+paths = ["package/*Gpu*", "package/*Mali*"]
+inputs = [
+  "ARM Mali-G72 MP3 (Bifrost architecture) at 0x11500000 (size 0x5000), IRQs JOB=66, MMU=67, GPU=65, power domain pd-g3d (exynos9610.dts).",
+]
+configuration = [
+  "dts/exynos9611.dtsi declares mali@11500000 with status = 'disabled'.",
+  "CONFIG_XNU_NATIVE_ADRENO is unset; initial graphics relies on GopFramebuffer CPU presentation.",
+]
+procedure = [
+  "Bring up CPU-presented GopFramebuffer desktop first before evaluating Mali Bifrost / Panfrost-to-Metal translation.",
+]
+findings = [
+  "UniXNU currently ships GPU acceleration only for Qualcomm Adreno 740; ARM Mali-G72 MP3 has no XNU kernel driver or Metal frontend.",
+]
+completion = [
+  "Software/GOP display path presents frames cleanly; GPU acceleration remains a long-term stretch goal.",
+]
+limits = [
+  "No native Mali-G72 XNU KMD or Metal translation layer exists.",
+]
+next_action = [
+  "Keep GPU disabled until UEFI, XNU kernel boot, UFS storage, and GOP display are working.",
+]
+evidence = []
+
+[[area]]
+id = "network"
+status = "planned"
+components = []
+paths = ["package/*Wifi*", "package/*Net*"]
+inputs = [
+  "Exynos 9611 integrated WLBT (S.LSI SCSC MX140 Wi-Fi/Bluetooth subsystem, exynos9610-wlbt.dtsi).",
+  "Synopsys USB DWC3 controller at 0x13200000 (IRQ 186) with PHYs at 0x131D0000 and 0x131F0000 (candidate for USB CDC/NCM networking).",
+]
+configuration = [
+  "dts/exynos9611.dtsi declares dwc3@13200000 disabled pending XNU USB/network driver.",
+]
+procedure = [
+  "Prioritize USB DWC3 gadget networking or serial diagnostics before attempting proprietary SCSC WLBT Wi-Fi/BT firmware bring-up.",
+]
+findings = [
+  "Samsung SCSC WLBT requires custom mailbox/MIF shared-memory firmware loading (mx140.bin) with no existing XNU driver.",
+]
+completion = [
+  "USB network interface or Wi-Fi associates and passes sustained IP traffic under XNU.",
+]
+limits = [
+  "Neither Exynos DWC3 USB nor SCSC WLBT Wi-Fi/Bluetooth drivers are implemented in XNU yet.",
+]
+next_action = [
+  "Archive proprietary WLBT firmware metadata during PHASE0 and defer network bring-up until after XNU kernel and storage boot.",
+]
+evidence = []
+
+[[area]]
+id = "cellular"
+status = "planned"
+components = []
+paths = ["package/*Modem*", "package/*Cellular*"]
+inputs = [
+  "Samsung Shannon S337AP integrated LTE modem (modem-s337ap-sipc-pdata.dtsi), reserved memory modem_if at 0xED000000 (138 MiB) and cp_ram_logging at 0xF5A00000 (30 MiB).",
+]
+configuration = [
+  "dts/a51.dts marks modem_if and cp_ram_logging as no-map reserved memory so XNU does not corrupt CP memory.",
+]
+procedure = [
+  "Keep modem memory reserved during bring-up; cellular SIPC/SHMEM bridging is out of scope for initial milestones.",
+]
+findings = [
+  "UniXNU QcomBaseband targets Qualcomm QRTR/QMI/IPA and is not compatible with Samsung Shannon SIPC.",
+]
+completion = [
+  "Modem carveouts remain isolated without causing Bus/TZ faults; cellular driver deferred.",
+]
+limits = [
+  "No Samsung Shannon SIPC baseband driver exists for XNU.",
+]
+next_action = [
+  "Verify exact modem_if and cp_ram_logging addresses in PHASE0 /proc/iomem dump.",
+]
+evidence = []
+
+[[area]]
+id = "audio"
+status = "planned"
+components = []
+paths = ["package/*Audio*"]
+inputs = [
+  "Exynos ABOX audio DSP (reserved memory 0xE9400000, 40 MiB), TI TAS2562 speaker amp, Realtek RT5665 headphone codec on i2c_6 @ 0x1b (exynos9611-a51_eur_open_07.dts).",
+]
+configuration = [
+  "dts/a51.dts reserves abox-rmem@e9400000 (no-map); audio drivers are not yet enabled.",
+]
+procedure = [
+  "Keep ABOX memory reserved until core boot, storage, display, and input milestones complete.",
+]
+findings = [
+  "SM-A515F uses Exynos ABOX + RT5665 + TAS2562 rather than Qualcomm ADSP/GPR.",
+]
+completion = [
+  "ABOX playback/capture routes deliver audio under CoreAudio.",
+]
+limits = [
+  "No Exynos ABOX or RT5665/TAS2562 XNU driver exists yet.",
+]
+next_action = [
+  "Defer audio driver development until XNU userland boots.",
+]
+evidence = []
+
+[[area]]
+id = "power"
+status = "planned"
+components = []
+paths = ["package/*Power*", "package/*Pmic*"]
+inputs = [
+  "Main PMIC: Samsung S2MPU09 over Speedy bus at 0x11A10000 (IRQ gpa2-0); Exynos PMU at 0x11860000 (PS_HOLD +0x330C, SWRESET +0x0400, reset reason +0x080C/+0x0810).",
+  "Interface PMIC / fuel gauge: S2MU106 / SM5713 (exynos9611-if-pmic-*.dtsi).",
+]
+configuration = [
+  "uefi-a51 enables SamsungPkg/Drivers/PmicDxe/S2mpu09Dxe.inf and S5E9610Pkg/Library/ResetSystemLib for clean UEFI reboot/shutdown and Download/Recovery mode transitions.",
+]
+procedure = [
+  "Verify UEFI warm reset, shutdown, and Download mode reboot via S5E9610Pkg ResetSystemLib on SM-A515F.",
+  "Verify PSCI system reset/poweroff under XNU.",
+]
+findings = [
+  "S5E9610Pkg ResetSystemLib already implements Samsung PMU magic reboot reasons (Download=0x12345601, Recovery=0x12345604) via PMU 0x11860000.",
+]
+completion = [
+  "UEFI and XNU execute clean reboot, shutdown, and Download/Recovery return transitions without battery-pull hangs.",
+]
+limits = [
+  "XNU battery telemetry, thermal management, and DVFS/ACPM are not implemented yet.",
+]
+next_action = [
+  "Confirm UEFI ResetSystem reboot-to-download and shutdown on SM-A515F during Stage-1 UEFI testing.",
+]
+evidence = []
+
+[[area]]
+id = "packaging"
+status = "planned"
+components = ["XnuPrelink"]
+paths = ["scripts/package.sh", "scripts/pack-odin-tar.py", "scripts/pack-sboot-v2.py", "patches/**"]
+inputs = [
+  "Mandatory fixed UniXNU packaging script copied verbatim from UniXNU/templates/package.sh.",
+  "Measured SM-A515F partition limits: boot (sda12) = 61,865,984 bytes (59.0 MiB), recovery (sda13) = 71,106,560 bytes (67.8 MiB).",
+  "Samsung S-Boot v2 repacker scripts/pack-sboot-v2.py (injects donor DT_TABLE 0xd7b7ab1e and recovery_dtbo) and Odin tar helper scripts/pack-odin-tar.py.",
+]
+configuration = [
+  "board.toml [package]: unixnu = '../UniXNU', boot_partition_bytes = 61865984, defconfig map ipados-17.7.11-21H461 -> a51_defconfig.",
+  "board.toml [bootimg.image]: base = 0x10000000, pagesize = 2048, kernel_compression = 'none', ramdisk_compression = 'uefi-chunks'.",
+  ".github/workflows/package.yml builds full images on macOS runner; .github/workflows/uefi-bringup.yml builds Stage-1 UEFI on Ubuntu runner.",
+]
+procedure = [
+  "Run scripts/package.sh --check --os 17 after pinning UniXNU-exynos9611-common.",
+  "Run GitHub Actions workflow uefi-bringup.yml for Stage-1 UEFI recovery.tar, then package.yml for full XNU boot.img.",
+  "Pack boot.img or recovery.img with python3 scripts/pack-odin-tar.py --input boot.img --partition recovery --output a51-unixnu-recovery.tar.",
+]
+findings = [
+  "Flashing to Samsung recovery partition (67.8 MiB) preserves stock Android boot while giving 8.8 MiB extra headroom over boot (59.0 MiB).",
+  "ramdisk_compression = 'uefi-chunks' keeps the 128 MiB FAT payload within SM-A515F partition limits.",
+]
+completion = [
+  "scripts/package.sh --os 17 completes all steps (deps, preflight, patches, build, pack, verify) on GitHub Actions within boot_partition_bytes.",
+  "Generated Odin tar flashes cleanly via Odin/Heimdall or TWRP.",
+]
+limits = [
+  "Remote GitHub Actions build requires pushing UniXNU-exynos9611-common, UniXNU-a51, and uefi-a51, updating repository names in workflows/feeds.toml, and configuring secret UNIXNU_UNIQUE_CHIP_ID.",
+]
+next_action = [
+  "Push repositories to GitHub, update placeholder owner names in feeds.toml and workflows, and run uefi-bringup.yml first.",
+]
+evidence = []
+
+[[area]]
+id = "diagnostics"
+status = "planned"
+components = []
+paths = ["scripts/dump-a51-hardware.ps1", "scripts/dump-a51-hardware.sh", "unixnu.lock"]
+inputs = [
+  "Phase-0 ADB reconnaissance scripts (scripts/dump-a51-hardware.ps1 for Windows and scripts/dump-a51-hardware.sh for Linux/WSL) targeting TWRP or rooted SM-A515F.",
+  "Early framebuffer diagnostics via UEFI SimpleFbDxe DEBUG build (FrameBufferSerialPortLib) and XNU panic_screen = true.",
+]
+configuration = [
+  "board.toml [payload]: panic_screen = true, kernel_args includes '-v', 'serial=3', 'debug=0x14e', 'armcpu-diagnostics=1'.",
+  "uefi-a51 DEBUG target routes UEFI DEBUG() logs directly to framebuffer via FrameBufferSerialPortLib.",
+]
+procedure = [
+  "Boot SM-A515F into TWRP (or rooted Android with USB debugging) and run scripts/dump-a51-hardware.ps1.",
+  "Flash Stage-1 UEFI DEBUG image to recovery and photograph on-screen FrameBufferSerialPortLib output.",
+  "Add AdvancedLogDxe QR log exporter after Stage-1 UEFI boots cleanly.",
+]
+findings = [
+  "SM-A515F has no exposed external UART connector without hardware modification, making FrameBufferSerialPortLib (UEFI) and panic_screen (XNU) the primary initial diagnostic channels.",
+]
+completion = [
+  "Phase-0 dump captures stock DTB, /proc/iomem, dmesg, boot.img header, and UFS GPT table.",
+  "UEFI DEBUG framebuffer logs and XNU checkpoint/panic photographs are recorded as device evidence.",
+]
+limits = [
+  "No on-device diagnostic logs have been captured yet.",
+]
+next_action = [
+  "Connect SM-A515F via USB in TWRP/root mode and run scripts/dump-a51-hardware.ps1.",
+]
+evidence = []

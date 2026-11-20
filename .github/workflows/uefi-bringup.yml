@@ -1,0 +1,141 @@
+name: UEFI bring-up (Stage 1)
+
+# Fast Ubuntu GitHub Actions workflow to compile ONLY uefi-a51 (SILICIUM_UEFI.fd +
+# standalone Mu-a51-0.img + Odin recovery.tar) AND validate UniXNU-a51 DTS -> DTB -> ADT
+# without needing a macOS runner or Apple IPSW.
+#
+# Use this first to verify that UEFI boots to screen with working volume/power buttons
+# and UFS enumeration on your physical Galaxy SM-A515F!
+
+on:
+  workflow_dispatch:
+    inputs:
+      uefi_repo:
+        description: "UEFI repository (OWNER/uefi-a51)"
+        type: string
+        required: true
+        default: "OWNER/uefi-a51"
+      uefi_ref:
+        description: "UEFI branch or commit"
+        type: string
+        required: true
+        default: "a51-unixnu"
+      soc_repo:
+        description: "SoC repository (OWNER/UniXNU-exynos9611-common)"
+        type: string
+        required: true
+        default: "OWNER/UniXNU-exynos9611-common"
+      soc_ref:
+        description: "SoC branch or commit"
+        type: string
+        required: true
+        default: "main"
+      target:
+        description: "UEFI build target (DEBUG prints logs directly to the screen)"
+        type: choice
+        options: ["DEBUG", "RELEASE"]
+        default: "DEBUG"
+      flash_partition:
+        description: "Partition name inside Odin .tar (recovery recommended to keep Android intact)"
+        type: choice
+        options: ["recovery", "boot"]
+        default: "recovery"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-dts-and-record:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: UniXNU-a51
+
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          path: UniXNU
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.soc_repo }}
+          ref: ${{ inputs.soc_ref }}
+          path: UniXNU-exynos9611-common
+
+      - name: Install device-tree-compiler
+        run: sudo apt-get update && sudo apt-get install -y device-tree-compiler
+
+      - name: Check porting record and compile DTS -> DTB -> ADT
+        working-directory: UniXNU
+        run: |
+          python3 scripts/porting-record.py check --device ../UniXNU-a51
+          dtc -I dts -O dtb -i ../UniXNU-exynos9611-common/dts \
+            -o /tmp/a51-hardware.dtb ../UniXNU-a51/dts/a51.dts
+          python3 scripts/make-adt.py \
+            --dtb /tmp/a51-hardware.dtb \
+            --os-profile profiles/os/ipados-17.7.11-21H461/profile.toml \
+            --board ../UniXNU-a51/board.toml \
+            --unique-chip-id A515F001 \
+            --data-ramdisk --trust-cache \
+            --output /tmp/a51-kernel.macho.adt
+          ls -lh /tmp/a51-hardware.dtb /tmp/a51-kernel.macho.adt
+
+      - name: Upload compiled DTB & ADT
+        uses: actions/upload-artifact@v4
+        with:
+          name: a51-devicetree
+          retention-days: 7
+          path: |
+            /tmp/a51-hardware.dtb
+            /tmp/a51-kernel.macho.adt
+
+  build-stage1-uefi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: UniXNU-a51
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.uefi_repo }}
+          ref: ${{ inputs.uefi_ref }}
+          path: uefi-a51
+          submodules: recursive
+
+      - name: Install EDK2 / Mu-Silicium dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential uuid-dev iasl git nasm python3-venv python3-pip \
+            clang lld llvm gcc-aarch64-linux-gnu device-tree-compiler mono-devel
+
+      - name: Build Stage-1 standalone UEFI for Galaxy A51 (a51Pkg)
+        working-directory: uefi-a51
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r pip-requirements.txt
+          export CLANG_BIN=/usr/bin/
+          python3 build_uefi.py -d a51 -r "${{ inputs.target }}"
+
+      - name: Pack Odin tar for flashing
+        run: |
+          python3 UniXNU-a51/scripts/pack-odin-tar.py \
+            --input uefi-a51/Mu-a51-0.img \
+            --partition "${{ inputs.flash_partition }}" \
+            --output "a51-uefi-${{ inputs.target }}-${{ inputs.flash_partition }}.tar"
+          ls -lh uefi-a51/Mu-a51-0.img "a51-uefi-${{ inputs.target }}-${{ inputs.flash_partition }}.tar"
+
+      - name: Upload Stage-1 UEFI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: a51-stage1-uefi-${{ inputs.target }}
+          retention-days: 14
+          path: |
+            uefi-a51/Build/a51Pkg/*/FV/SILICIUM_UEFI.fd
+            uefi-a51/Mu-a51-0.img
+            a51-uefi-*.tar

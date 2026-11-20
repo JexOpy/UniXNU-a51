@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: BSD-2-Clause-Patent
+//
+// Device tree for Samsung Galaxy A51 (SM-A515F, codename a51, Exynos 9611).
+// Hardware variant: 6 GB RAM / 128 GB UFS 2.0, 1080x2400 Super AMOLED (SDC_800042).
+//
+// Verified against physical SM-A515F (bootloader A515FXXU8HWI1, EUR OPEN REV01,
+// androidboot.revision=6) via Phase-0 live /sys/firmware/fdt and /proc/iomem dump:
+//   - Low DRAM banks:
+//       0x0_80000000 .. 0x0_BAB00000 (939 MiB)
+//       [HOLE: 0xBAB00000 .. 0xC0000000, 85 MiB TZ Secure DRAM]
+//       0x0_C0000000 .. 0x0_E0000000 (512 MiB)
+//       [HOLE: 0xE0000000 .. 0xE1900000, 25 MiB Secure PGTBL]
+//       0x0_E1900000 .. 0x1_00000000 (487 MiB)
+//   - High DRAM banks (4 GiB):
+//       0x8_80000000 .. 0x9_00000000 (2 GiB)
+//       0x9_00000000 .. 0x9_80000000 (2 GiB; el2_earlymem at 0x9_7DE00000, 34 MiB)
+//   - Bootloader simple framebuffer: s3cfb.bootloaderfb=0xCA000000 (1080x2400x32bpp)
+//   - Bootloader initrd load address: linux,initrd-start=0x89000000
+//
+// UniXNU's common ADT generator requires one contiguous enabled DRAM range.
+// Expose 0x92000000..0xBAA00000 (650 MiB, 2 MiB aligned): strictly above S-Boot
+// initrd (0x89000000) and sec_debug_next logs (0x91202000..0x91B88000), and
+// strictly below the TrustZone secure hole (0xBAB00000), while comfortably
+// holding the 512 MiB (0x20000000) XNU owned memory window.
+
+/dts-v1/;
+/include/ "exynos9611.dtsi"
+
+/ {
+    model = "Samsung Galaxy A51 (SM-A515F)";
+    compatible = "samsung,a51", "samsung,a51nsxx", "samsung,exynos9611", "samsung,exynos9610";
+
+    memory@92000000 {
+        device_type = "memory";
+        reg = <0x0 0x92000000 0x0 0x28a00000>;
+    };
+
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        sec-debug@80000000 {
+            reg = <0x0 0x80000000 0x0 0x00002000>;
+            no-map;
+        };
+
+        el2-code@87000000 {
+            reg = <0x0 0x87000000 0x0 0x00200000>;
+            no-map;
+        };
+
+        // S-Boot loads the Android boot/recovery ramdisk at physical 0x89000000.
+        sboot-initrd@89000000 {
+            reg = <0x0 0x89000000 0x0 0x04800000>;
+            no-map;
+        };
+
+        // sec_avc_log, sec_tsp_log, sec_disp_log, and sec_debug_next from bootargs.
+        sec-debug-logs@91200000 {
+            reg = <0x0 0x91200000 0x0 0x00a00000>;
+            no-map;
+        };
+
+        // TrustZone Secure DRAM hole: mapping causes a synchronous external abort.
+        tz-secure-dram@bab00000 {
+            reg = <0x0 0xbab00000 0x0 0x05500000>;
+            no-map;
+        };
+
+        sec-log@c0000000 {
+            reg = <0x0 0xc0000000 0x0 0x00080000>;
+            no-map;
+        };
+
+        uefi-dxe-heap@c0080000 {
+            reg = <0x0 0xc0080000 0x0 0x03c00000>;
+            no-map;
+        };
+
+        uefi-fd-stack@c9000000 {
+            reg = <0x0 0xc9000000 0x0 0x00340000>;
+            no-map;
+        };
+
+        // Verified bootloader scanout buffer (s3cfb.bootloaderfb=0xca000000,
+        // panel SDC_800042 1080x2400x32bpp, double buffered in 20 MiB).
+        framebuffer@ca000000 {
+            reg = <0x0 0xca000000 0x0 0x01400000>;
+            no-map;
+        };
+
+        camera-contig@db900000 {
+            reg = <0x0 0xdb900000 0x0 0x00700000>;
+            no-map;
+        };
+
+        // Secure page tables hole.
+        secure-pgtbl@e0000000 {
+            reg = <0x0 0xe0000000 0x0 0x01900000>;
+            no-map;
+        };
+
+        secure-camera@e1900000 {
+            reg = <0x0 0xe1900000 0x0 0x02000000>;
+            no-map;
+        };
+
+        abox-rmem@e9400000 {
+            reg = <0x0 0xe9400000 0x0 0x02800000>;
+            no-map;
+        };
+
+        modem-if@ed000000 {
+            reg = <0x0 0xed000000 0x0 0x08a00000>;
+            no-map;
+        };
+
+        cp-ram-logging@f5a00000 {
+            reg = <0x0 0xf5a00000 0x0 0x01e00000>;
+            no-map;
+        };
+
+        ess-debug@f9000000 {
+            reg = <0x0 0xf9000000 0x0 0x01000000>;
+            no-map;
+        };
+
+        gnss-if@fb000000 {
+            reg = <0x0 0xfb000000 0x0 0x00800000>;
+            no-map;
+        };
+
+        chub-rmem@fd000000 {
+            reg = <0x0 0xfd000000 0x0 0x00080000>;
+            no-map;
+        };
+
+        el2-earlymem@97de00000 {
+            reg = <0x9 0x7de00000 0x0 0x02200000>;
+            no-map;
+        };
+    };
+};
+
+// Initial bring-up enables cpu0 (Cortex-A53 MPIDR 0x0) and GIC-400 only.
+// Secondary cores (cpu1..cpu7), UFS, DWC3 USB, DECON, and Melfas mss100 touch
+// (i2c_4 @ 0x48, IRQ gpa0-0) stay disabled until their XNU drivers are adapted.

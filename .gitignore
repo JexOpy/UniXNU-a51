@@ -1,0 +1,12 @@
+local.toml
+.cache/
+out/
+phase0/
+*.img
+*.tar
+*.dtb
+*.adt
+*.log
+__pycache__/
+*.pyc
+.DS_Store

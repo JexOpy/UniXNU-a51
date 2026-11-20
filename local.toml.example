@@ -1,0 +1,7 @@
+# Copy to local.toml (git-ignored) to override source locations on your machine.
+# Relative paths resolve from this device repository directory.
+
+[[source]]
+kind = "soc"
+name = "exynos9611"
+local = "../UniXNU-exynos9611-common"

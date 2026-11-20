@@ -1,0 +1,18 @@
+# Required proprietary / external firmware files for Samsung Galaxy A51 (SM-A515F).
+# Do not commit proprietary binaries to Git; extract them from your own device or
+# official Samsung SM-A515F firmware package into .cache/firmware/ during bring-up.
+#
+# Format: <relative-path>  # <purpose / origin>
+#
+# --- Bootloader & Device Tree (Phase 0 dump from SM-A515F) ---
+# dtb/a51-stock.dtb            # Stock /sys/firmware/fdt or extracted DTB from boot.img
+# dtb/a51-stock-dtbo.img       # Stock /dev/block/by-name/dtbo (for panel/board revision checks)
+#
+# --- Touchscreen (Melfas MSS100 on i2c_4 @ 0x48) ---
+# vendor/firmware/tsp_melfas/mss100_a51.fw
+#
+# --- Wireless (Exynos WLBT Wi-Fi / Bluetooth, future milestone) ---
+# vendor/firmware/wlbt/mx140.bin
+#
+# --- Apple IPSW (downloaded automatically by UniXNU os profile ipados-17.7.11-21H461) ---
+# iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw (iPad7,1, arm64)

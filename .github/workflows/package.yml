@@ -1,0 +1,116 @@
+name: package
+
+# Full UniXNU build for Samsung Galaxy A51 (SM-A515F, Exynos 9611) on GitHub macOS runner.
+#
+# Before running:
+#   1. Push UniXNU-exynos9611-common, UniXNU-a51, and uefi-a51 under your GitHub account.
+#   2. Update feeds.toml to pin your UniXNU-exynos9611-common git URL + 40-char commit.
+#   3. Set repository secret UNIXNU_UNIQUE_CHIP_ID to 8 hex digits (e.g. A515F001).
+#   4. Provide your GitHub owner name in the workflow input (or edit the default below)
+#      and ensure your SM-A515F stock firmware DTB is committed/fetched as configured.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "OS profile (Exynos 9611 is ARMv8.0 arm64: use 17)"
+        type: choice
+        options: ["17"]
+        default: "17"
+      uefi_repo:
+        description: "UEFI repository (OWNER/uefi-a51)"
+        type: string
+        required: true
+        default: "OWNER/uefi-a51"
+      uefi_ref:
+        description: "UEFI branch or commit"
+        type: string
+        required: true
+        default: "a51-unixnu"
+      flash_partition:
+        description: "Target partition name inside Odin .tar (recovery recommended for bring-up)"
+        type: choice
+        options: ["recovery", "boot"]
+        default: "recovery"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          submodules: recursive
+
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          path: UniXNU
+          submodules: recursive
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.uefi_repo }}
+          ref: ${{ inputs.uefi_ref }}
+          path: uefi-a51
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          brew install dtc llvm lld cmake mtools blacktop/tap/ipsw
+          ok=1
+          for t in clang xcodebuild make git ninja cmake dtc fdtget fdtput aea compression_tool \
+                   mformat mcopy ipsw; do
+            command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
+          done
+          for t in lld-link llvm-lib llvm-rc llvm-nm llvm-objcopy; do
+            [ -f "/opt/homebrew/opt/llvm/bin/$t" ] || [ -f "/opt/homebrew/opt/lld/bin/$t" ] || { echo "missing tool: $t"; ok=0; }
+          done
+          [ "$ok" = 1 ]
+
+      - name: Validate platform seed
+        env:
+          seed: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          if ! [[ "$seed" =~ ^[0-9a-fA-F]{8}$ ]]; then
+            echo 'Set repository secret UNIXNU_UNIQUE_CHIP_ID to 8 hex digits.' >&2
+            exit 1
+          fi
+
+      - name: Package UniXNU images
+        working-directory: device
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          scripts/package.sh --os "${{ inputs.os }}" --uefi ../uefi-a51
+
+      - name: Pack Odin tar
+        working-directory: device
+        run: |
+          BOOT_IMG=$(ls ../UniXNU/out/a51/*/*/boot/boot.img | head -n 1)
+          python3 scripts/pack-odin-tar.py \
+            --input "$BOOT_IMG" \
+            --partition "${{ inputs.flash_partition }}" \
+            --output "../UniXNU/out/a51/a51-unixnu-${{ inputs.flash_partition }}.tar"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: a51-unixnu-images-${{ inputs.os }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            UniXNU/out/a51/*/*/boot/boot.img
+            UniXNU/out/a51/*/*/payload/payload.img
+            UniXNU/out/a51/*/*/kernel/kernel.macho
+            UniXNU/out/a51/*/*/package.manifest.json
+            UniXNU/out/a51/a51-unixnu-*.tar

@@ -1,0 +1,154 @@
+schema_version = 2
+
+# Board configuration for Samsung Galaxy A51 (SM-A515F, codename a51, Exynos 9611 / S5E9611).
+# Target hardware variant: 6 GB RAM / 128 GB UFS 2.0.
+#
+# Hardware register values come from:
+#   - Exynos9611Development/android_kernel_samsung_universal9611 (commit 23f87fb36310eee5e8ec5e27a3a0cd089209cbb4)
+#   - TeamWin/LineageOS android_device_samsung_a51 BoardConfig.mk
+#   - Sota4Ever/Mu-Silicium S5E9610Pkg / a50Pkg (commit 832879febad7fa3893c9becdc113c35a97f15608)
+#
+# Before first flash on physical SM-A515F hardware, complete PHASE0.md using
+# scripts/dump-a51-hardware.ps1 (or .sh) to verify RAM carveouts, framebuffer base,
+# boot header layout, and exact UFS userdata GPT LBAs on your unit.
+
+[board]
+name = "a51"
+soc = "Exynos 9611"
+soc_source = "exynos9611"
+os_profile = "ipados-17.7.11-21H461"
+description = "Samsung Galaxy A51 (SM-A515F, Exynos 9611, 6 GB / 128 GB UFS)"
+kit = "a51"
+
+[components]
+include = [
+  "ArmDTPlatform",
+  "ArmCpu",
+  "SoftwareAES",
+  "XnuPrelink",
+  "DarwinBoot",
+  "GopFramebuffer",
+  "RamBlock",
+]
+
+[kernel]
+defconfig = "a51_defconfig"
+config_fragments = [
+  "arch:configs/common.config",
+  "soc:configs/exynos9611.config",
+  "os:configs/ipados.config",
+]
+patch_series = [
+  "arch:patches/xnu/series",
+  "soc:patches/xnu/series",
+  "os:patches/xnu/series",
+  "device:patches/xnu/series",
+]
+
+[device_tree]
+source = "device:dts/a51.dts"
+include_dirs = ["soc:dts"]
+
+[firmware]
+config = "a51"
+dsc = "Platforms/Samsung/a51Pkg/a51.dsc"
+fd = "Build/a51Pkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+submodules = [
+  "Binaries",
+  "Common/Mu",
+  "Common/Mu_OEM_Sample",
+  "Silicium-ACPI",
+  "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl",
+]
+# Timer.patch is mandatory on Exynos 9611 because Samsung S-Boot leaves CNTFRQ_EL0 = 0.
+patches = [
+  "Resources/MuPatches/Timer.patch",
+  "Resources/MuPatches/Auth-Service.patch",
+  "Resources/MuPatches/Usb-Bus.patch",
+]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/Samsung",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{edk2}",
+  "{uefi}/Silicon/Samsung",
+  "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI",
+  "{uefi}/Silicium-ACPI/Platforms/Samsung",
+  "{uefi}/Silicium-ACPI/SoCs/Samsung",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+]
+
+[firmware.defines]
+BUILDID_STRING = "a51-unixnu"
+DEVICE_MODEL = "0"
+ENABLE_SECUREBOOT = "0"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+UNIXNU_PAYLOAD = "1"
+
+[bootimg]
+# Supply the device's stock/firmware DTB via --dtb or unixnu.local.toml after PHASE0 dump.
+
+[bootimg.image]
+# Samsung Galaxy A51 (SM-A515F, bootloader A515FXXU8HWI1) measured S-Boot parameters.
+# Verified on-device (2026-11-20):
+#   - boot partition:     61,865,984 B (59.0 MiB), header_version=2, dtb_offset=0x0
+#   - recovery partition: 71,106,560 B (67.8 MiB), header_version=2, dtb_offset=0x1f00000 + recovery_dtbo
+#   - S-Boot loads ramdisk at physical 0x89000000 (linux,initrd-start=0x89000000).
+#   - S-Boot expects a Samsung DT_TABLE (0xd7b7ab1e) in the v2 --dtb slot; use
+#     scripts/pack-sboot-v2.py to repack with donor dtb_table / recovery_dtbo for Odin flashing.
+base = 0x10000000
+kernel_offset = 0x8000
+ramdisk_offset = 0x1000000
+tags_offset = 0x100
+pagesize = 2048
+header_version = 1
+kernel_compression = "none"
+ramdisk_compression = "uefi-chunks"
+ramdisk_max_bytes = 56623104
+
+[payload]
+volume = "A51UNIXNU"
+size_mib = 128
+loader = "firmware"
+title = "UniXNU (SM-A515F)"
+timeout = 10
+panic_screen = true
+kernel_args = [
+  "-v",
+  "serial=3",
+  "debug=0x14e",
+  "kt_fixed_zones=120",
+  "fips_mode=4",
+  "armcpu-diagnostics=1",
+  "-no_slto_panic",
+]
+
+[payload.adt]
+chip_id = "207"
+unique_chip_id = "required"
+# 512 MiB contiguous window inside the measured clean low-RAM span 0x92000000-0xBAA00000 (650 MiB),
+# staying above S-Boot initrd (0x89000000) and sec_debug_next (0x91202000-0x91B88000) and below TZ hole (0xBAB00000).
+owned_memory_size = "0x20000000"
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+packed_data_ramdisk = true
+
+[userdata]
+# Measured on physical SM-A515F (128 GB UFS 2.0 /dev/block/sda, 4096 B logical blocks, sda32 userdata):
+first_lba = 2061568
+last_lba = 31234303
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS", optional = true },
+]
+
+[package]
+unixnu = "../UniXNU"
+boot_partition_bytes = 61865984
+
+[package.defconfig]
+"ipados-17.7.11-21H461" = "a51_defconfig"

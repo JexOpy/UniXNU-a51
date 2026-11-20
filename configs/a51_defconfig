@@ -1,0 +1,11 @@
+# Kernel defconfig for Samsung Galaxy A51 (SM-A515F, Exynos 9611).
+# Applied on top of arch/arm64/common.config, soc/exynos9611.config, and os/ipados.config.
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+CONFIG_XNU_SOURCE_PTHREAD=y
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+CONFIG_XNU_NATIVE_AES=y
+CONFIG_XNU_NATIVE_PAN=n
+CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
+# CONFIG_XNU_NATIVE_UFS is not set
+# CONFIG_XNU_NATIVE_ADRENO is not set
