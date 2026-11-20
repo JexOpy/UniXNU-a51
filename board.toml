@@ -83,6 +83,7 @@ packages = [
   "{uefi}/Common/Mu",
   "{uefi}/Common/Mu_OEM_Sample",
   "{edk2}",
+  "{uefi}/Mu_Basecore",
   "{uefi}/Silicon/Samsung",
   "{uefi}/Silicon/Silicium",
   "{uefi}/Silicium-ACPI",
