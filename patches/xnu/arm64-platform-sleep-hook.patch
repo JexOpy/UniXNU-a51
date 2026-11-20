@@ -1,0 +1,11 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -564,5 +564,7 @@
++void (*arm64_platform_sleep_hook)(boolean_t boot_cpu) = NULL;
++
+ void
+ bsd_init(void)
+ {
+ 	boot_progress_stage("bsd_init enter");
+ 	struct uthread *ut;

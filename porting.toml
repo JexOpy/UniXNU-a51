@@ -424,6 +424,7 @@ procedure = [
 findings = [
   "Flashing to Samsung recovery partition (67.8 MiB) preserves stock Android boot while giving 8.8 MiB extra headroom over boot (59.0 MiB).",
   "ramdisk_compression = 'uefi-chunks' keeps the 128 MiB FAT payload within SM-A515F partition limits.",
+  "patches/xnu/arm64-platform-sleep-hook.patch defines arm64_platform_sleep_hook = NULL so static XNU link resolves ArmCpu's weak_import reference on ipados-17.7.11-21H461.",
 ]
 completion = [
   "scripts/package.sh --os 17 completes all steps (deps, preflight, patches, build, pack, verify) on GitHub Actions within boot_partition_bytes.",

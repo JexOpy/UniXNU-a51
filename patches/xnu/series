@@ -1,2 +1,2 @@
-# Board-specific XNU patches for Samsung Galaxy A51 (SM-A515F / a51), in application order.
-# Currently empty during initial scaffold bring-up.
+# Galaxy A51 (SM-A515F) XNU kernel patch series (applied after os:patches/xnu/series).
+arm64-platform-sleep-hook.patch
