@@ -5,4 +5,4 @@
 name = "exynos9611"
 kind = "soc"
 git = "https://github.com/JexOpy/UniXNU-exynos9611-common.git"
-commit = "30f910b0f03294dfc98c58568469d1ed620d05a1"
+commit = "e034227aa7aa1ee9b1a5182b91f8c49e4e72f3f7"
