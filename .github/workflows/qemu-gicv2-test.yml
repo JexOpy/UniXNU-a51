@@ -53,6 +53,31 @@ jobs:
           mcopy -i "$PAYLOAD" "$KPATH" /tmp/kernel.macho
           ls -lh /tmp/kernel.macho
           file /tmp/kernel.macho
+          python3 - << 'SYMEOF'
+          import struct
+          m = open("/tmp/kernel.macho", "rb").read()
+          ncmds = struct.unpack_from("<I", m, 16)[0]
+          off = 32
+          syms = []
+          for _ in range(ncmds):
+              cmd, sz = struct.unpack_from("<II", m, off)
+              if cmd == 2:
+                  symoff, nsyms, stroff, strsize = struct.unpack_from("<IIII", m, off + 8)
+                  for i in range(nsyms):
+                      strx, stype, sect, desc, val = struct.unpack_from("<IBBHQ", m, symoff + i*16)
+                      if (stype & 0xe0) == 0 and (stype & 0x0e) == 0x0e and val >= 0xfffffff007000000:
+                          end = m.find(b"\x00", stroff + strx)
+                          syms.append((val, m[stroff+strx:end].decode("ascii", "ignore")))
+              off += sz
+          syms.sort()
+          for target in (0xfffffff00740fd3c, 0xfffffff007579b84):
+              for i, (val, name) in enumerate(syms):
+                  if val > target:
+                      v0, n0 = syms[i-1]
+                      print(f"RESOLVE {hex(target)} -> {n0} + {hex(target - v0)} (base {hex(v0)})")
+                      break
+          SYMEOF
+          llvm-objdump -d --start-address=0xfffffff00740fd10 --stop-address=0xfffffff00740fd60 /tmp/kernel.macho || true
 
       - name: Build QEMU virt GICv2 ADT (arm,gic-400 + PL011)
         run: |
