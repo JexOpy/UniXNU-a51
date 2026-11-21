@@ -34,6 +34,7 @@ findings = [
   "package.yml passes an absolute UEFI checkout path via --uefi and UNIXNU_UEFI so patch-xnu-entry-probe.py locates FrameBufferSerialPortLib/Font.h for panic_screen.",
   "board.toml sets payload.panic_screen = false because Sota4Ever/Mu-Silicium ships Font5x16.h instead of GLYPH_FONT Font.h; XNU boot progress still renders via zzz-boot-progress.patch.",
   "board.toml [firmware] packages places {uefi}/Mu_Basecore before {edk2} (with Timer/Auth-Service/Usb-Bus patches applied in package.yml) so Sota4Ever/Mu-Silicium builds against its matched Mu_Basecore.",
+  "package.yml passes --dtb $UEFI_ABS/Resources/DTBs/a51.dtb so unixnu bootimg packs SILICIUM_UEFI.fd (UNIXNU_PAYLOAD=1) and payload.img into boot.img.",
 ]
 completion = [
   "All four configuration layers resolve cleanly in unixnu status --json with pinned Git commits in feeds.toml and unixnu.lock.",
