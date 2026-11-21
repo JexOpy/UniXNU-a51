@@ -1,72 +1,84 @@
-name: QEMU GICv2 XNU test
+name: QEMU GICv2 Kernel UART Test
 
 on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "package.yml run ID to download a51-unixnu-images-17 from"
-        type: string
-        required: true
+        description: "Package workflow run ID to pull kernel.macho from"
+        required: false
         default: "44869276621"
+      boot_args:
+        description: "XNU boot-args"
+        required: false
+        default: "-v serial=3 debug=0x14e"
       timeout_sec:
-        description: "QEMU run timeout in seconds"
-        type: string
-        required: true
-        default: "60"
-
-permissions:
-  contents: read
-  actions: read
+        description: "QEMU timeout in seconds"
+        required: false
+        default: "30"
 
 jobs:
   qemu-gicv2:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          path: device
+      - name: Checkout UniXNU-a51
+        uses: actions/checkout@v4
 
-      - uses: actions/checkout@v4
+      - name: Checkout UniXNU (for dt2adt.py + qemu-entry)
+        uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU
+          ref: main
           path: UniXNU
 
-      - name: Install QEMU, OVMF, dtc, mtools
+      - name: Install QEMU, LLVM, dtc, mtools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 device-tree-compiler mtools
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm device-tree-compiler mtools clang lld llvm
 
-      - name: Download a51-unixnu-images-17 artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p /tmp/art
-          gh run download "${{ inputs.run_id }}" --repo "${{ github.repository }}" --name a51-unixnu-images-17 --dir /tmp/art
-          ls -lh /tmp/art/UniXNU/out/a51/ipados-17.7.11-21H461/a51/payload/payload.img
+      - name: Download built images artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: a51-unixnu-images-17
+          run-id: ${{ github.event.inputs.run_id || '44869276621' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: /tmp/a51-images
 
-      - name: Build QEMU virt GICv2 ADT and boot kernel.macho in QEMU
+      - name: Extract kernel.macho from payload.img
         run: |
-          set -euo pipefail
-          cat > /tmp/qemu-gicv2.dts <<'EOF'
+          ls -lh /tmp/a51-images
+          mcopy -i /tmp/a51-images/payload.img ::/EFI/UniXNU/kernel.macho /tmp/kernel.macho
+          ls -lh /tmp/kernel.macho
+          file /tmp/kernel.macho
+
+      - name: Build QEMU virt GICv2 ADT (arm,gic-400 + PL011)
+        run: |
+          cat << 'EOF' > /tmp/qemu-gicv2.dts
           /dts-v1/;
+
           / {
-            compatible = "samsung,a51-qemu-gicv2";
-            model = "Samsung Galaxy A51 (QEMU GICv2 Test)";
+            compatible = "linux,dummy-virt";
+            model = "QEMU Virt GICv2 (A51 ArmCpu Test)";
             #address-cells = <2>;
             #size-cells = <2>;
-            interrupt-parent = <&gic>;
+
+            chosen {
+              stdout-path = "/pl011@9000000";
+            };
+
+            memory@40000000 {
+              device_type = "memory";
+              reg = <0x0 0x40000000 0x0 0x20000000>;
+            };
 
             cpus {
-              #address-cells = <2>;
+              #address-cells = <1>;
               #size-cells = <0>;
-              timebase-frequency = <62500000>;
-              cpu0: cpu@0 {
+
+              cpu@0 {
                 device_type = "cpu";
                 compatible = "arm,cortex-a53";
-                reg = <0x0 0x0>;
+                reg = <0x0>;
                 enable-method = "psci";
-                status = "okay";
               };
             };
 
@@ -77,69 +89,100 @@ jobs:
 
             timer {
               compatible = "arm,armv8-timer";
-              interrupts = <1 13 0x04>, <1 14 0x04>, <1 11 0x04>, <1 10 0x04>;
+              interrupt-parent = <&intc>;
+              interrupts = <1 13 0x4>, <1 14 0x4>, <1 11 0x4>, <1 10 0x4>;
               always-on;
             };
 
-            memory@40000000 {
-              device_type = "memory";
-              reg = <0x0 0x40000000 0x0 0x40000000>;
+            intc: intc@8000000 {
+              compatible = "arm,gic-400", "arm,cortex-a15-gic";
+              interrupt-controller;
+              #interrupt-cells = <3>;
+              reg = <0x0 0x08000000 0x0 0x00010000>,
+                    <0x0 0x08010000 0x0 0x00010000>;
             };
 
-            soc {
-              compatible = "simple-bus";
-              #address-cells = <2>;
-              #size-cells = <2>;
-              ranges = <0x0 0x0 0x0 0x0 0x0 0x40000000>;
-
-              gic: interrupt-controller@8000000 {
-                compatible = "arm,gic-400", "arm,cortex-a15-gic";
-                unixnu,adt-name = "intc";
-                #interrupt-cells = <3>;
-                interrupt-controller;
-                reg = <0x0 0x08000000 0x0 0x00010000>,
-                      <0x0 0x08010000 0x0 0x00010000>;
-              };
-
-              uart0: serial@9000000 {
-                compatible = "arm,pl011", "arm,primecell";
-                reg = <0x0 0x09000000 0x0 0x1000>;
-                interrupts = <0 1 4>;
-                status = "okay";
-              };
+            pl011@9000000 {
+              compatible = "arm,pl011", "arm,primecell";
+              reg = <0x0 0x09000000 0x0 0x00001000>;
+              interrupt-parent = <&intc>;
+              interrupts = <0 1 4>;
+              clock-names = "uartclk", "apb_pclk";
             };
           };
           EOF
-
           dtc -I dts -O dtb -o /tmp/qemu-gicv2.dtb /tmp/qemu-gicv2.dts
-          python3 UniXNU/scripts/make-adt.py \
-            --dtb /tmp/qemu-gicv2.dtb \
-            --os-profile UniXNU/profiles/os/ipados-17.7.11-21H461/profile.toml \
-            --board device/board.toml \
-            --unique-chip-id A515F001 \
-            --data-ramdisk --trust-cache \
-            --output /tmp/qemu-gicv2.adt
+          python3 UniXNU/tools/dt2adt.py /tmp/qemu-gicv2.dtb /tmp/qemu-gicv2.adt
+          ls -lh /tmp/qemu-gicv2.dtb /tmp/qemu-gicv2.adt
 
-          cp /tmp/art/UniXNU/out/a51/ipados-17.7.11-21H461/a51/payload/payload.img /tmp/qemu-payload.img
-          mdir -i /tmp/qemu-payload.img ::/EFI/UniXNU ::/EFI/UniXNU/Payloads || true
-          mcopy -o -i /tmp/qemu-payload.img /tmp/qemu-gicv2.adt ::/EFI/UniXNU/Payloads/kernel.macho.adt
-          mcopy -i /tmp/qemu-payload.img ::/EFI/UniXNU/unixnu.toml /tmp/unixnu.toml
-          sed -i 's/timeout = .*/timeout = 1/' /tmp/unixnu.toml
-          sed -i 's/args = "/args = "serial=3 /' /tmp/unixnu.toml
-          cat /tmp/unixnu.toml
-          mcopy -o -i /tmp/qemu-payload.img /tmp/unixnu.toml ::/EFI/UniXNU/unixnu.toml
-          mmd -i /tmp/qemu-payload.img ::/EFI/BOOT || true
-          mcopy -i /tmp/qemu-payload.img ::/EFI/UniXNU/UniXNU.efi /tmp/UniXNU.efi
-          mcopy -o -i /tmp/qemu-payload.img /tmp/UniXNU.efi ::/EFI/BOOT/BOOTAA64.EFI
+      - name: Prepare entry.bin + kernel-flat.bin + boot-args.bin and run QEMU GICv2
+        run: |
+          mkdir -p /tmp/qemu-out
+          python3 - << 'PYEOF'
+          import importlib.util, json, subprocess, sys
+          from pathlib import Path
 
-          echo "=== Launching QEMU virt (gic-version=2, cortex-a53) for ${{ inputs.timeout_sec }}s ==="
-          timeout "${{ inputs.timeout_sec }}" qemu-system-aarch64 \
-            -machine virt,gic-version=2 \
+          spec = importlib.util.spec_from_file_location("probe", "UniXNU/scripts/probe-stock-entry.py")
+          probe = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(probe)
+
+          out = Path("/tmp/qemu-out")
+          boot_args = "${{ github.event.inputs.boot_args || '-v serial=3 debug=0x14e' }}"
+          report = probe.prepare(
+              Path("/tmp/kernel.macho"),
+              out,
+              phys_base=0x50000000,
+              boot_args_pa=0x5ff00000,
+              device_tree=Path("/tmp/qemu-gicv2.adt"),
+              command_line=boot_args,
+          )
+          print(json.dumps(report, indent=2))
+
+          entry_pa = int(report["entry_pa"], 16)
+          subprocess.run([
+              "clang", "--target=aarch64-none-elf", "-c",
+              f"-DBOOT_ARGS_PA={0x5ff00000}",
+              f"-DKERNEL_ENTRY_PA={entry_pa}",
+              "UniXNU/scripts/qemu-entry/entry.S", "-o", str(out / "entry.o")
+          ], check=True)
+          subprocess.run([
+              "ld.lld", "-T", "UniXNU/scripts/qemu-entry/link.ld",
+              str(out / "entry.o"), "-o", str(out / "entry.elf")
+          ], check=True)
+          subprocess.run([
+              "llvm-objcopy", "-O", "binary",
+              str(out / "entry.elf"), str(out / "entry.bin")
+          ], check=True)
+          PYEOF
+
+          TIMEOUT_SEC="${{ github.event.inputs.timeout_sec || '30' }}"
+          timeout "${TIMEOUT_SEC}" qemu-system-aarch64 \
+            -M virt,gic-version=2,virtualization=off,secure=off \
+            -accel tcg \
             -cpu cortex-a53 \
-            -m 2048 \
-            -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-            -nographic \
-            -serial mon:stdio \
-            -drive if=none,id=hd0,format=raw,file=/tmp/qemu-payload.img \
-            -device virtio-blk-pci,drive=hd0 \
-            || true
+            -m 512 \
+            -smp 1 \
+            -display none \
+            -monitor none \
+            -nic none \
+            -no-reboot \
+            -serial file:/tmp/qemu-out/serial.log \
+            -kernel /tmp/qemu-out/entry.bin \
+            -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x50000000,force-raw=on \
+            -device loader,file=/tmp/qemu-out/boot-args.bin,addr=0x5ff00000,force-raw=on \
+            2>/tmp/qemu-out/qemu-stderr.log || true
+
+          echo "========== QEMU STDERR =========="
+          cat /tmp/qemu-out/qemu-stderr.log || true
+          echo "========== PL011 UART SERIAL LOG =========="
+          cat /tmp/qemu-out/serial.log || true
+          echo "========== END SERIAL LOG =========="
+
+      - name: Upload QEMU serial log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qemu-gicv2-serial-log
+          path: |
+            /tmp/qemu-out/serial.log
+            /tmp/qemu-out/qemu-stderr.log
