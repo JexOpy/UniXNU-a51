@@ -1,0 +1,145 @@
+name: QEMU GICv2 XNU test
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "package.yml run ID to download a51-unixnu-images-17 from"
+        type: string
+        required: true
+        default: "44869276621"
+      timeout_sec:
+        description: "QEMU run timeout in seconds"
+        type: string
+        required: true
+        default: "60"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  qemu-gicv2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          path: UniXNU
+
+      - name: Install QEMU, OVMF, dtc, mtools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 device-tree-compiler mtools
+
+      - name: Download a51-unixnu-images-17 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/art
+          gh run download "${{ inputs.run_id }}" --repo "${{ github.repository }}" --name a51-unixnu-images-17 --dir /tmp/art
+          ls -lh /tmp/art/UniXNU/out/a51/ipados-17.7.11-21H461/a51/payload/payload.img
+
+      - name: Build QEMU virt GICv2 ADT and boot kernel.macho in QEMU
+        run: |
+          set -euo pipefail
+          cat > /tmp/qemu-gicv2.dts <<'EOF'
+          /dts-v1/;
+          / {
+            compatible = "samsung,a51-qemu-gicv2";
+            model = "Samsung Galaxy A51 (QEMU GICv2 Test)";
+            #address-cells = <2>;
+            #size-cells = <2>;
+            interrupt-parent = <&gic>;
+
+            cpus {
+              #address-cells = <2>;
+              #size-cells = <0>;
+              timebase-frequency = <62500000>;
+              cpu0: cpu@0 {
+                device_type = "cpu";
+                compatible = "arm,cortex-a53";
+                reg = <0x0 0x0>;
+                enable-method = "psci";
+                status = "okay";
+              };
+            };
+
+            psci {
+              compatible = "arm,psci-0.2";
+              method = "hvc";
+            };
+
+            timer {
+              compatible = "arm,armv8-timer";
+              interrupts = <1 13 0x04>, <1 14 0x04>, <1 11 0x04>, <1 10 0x04>;
+              always-on;
+            };
+
+            memory@40000000 {
+              device_type = "memory";
+              reg = <0x0 0x40000000 0x0 0x40000000>;
+            };
+
+            soc {
+              compatible = "simple-bus";
+              #address-cells = <2>;
+              #size-cells = <2>;
+              ranges = <0x0 0x0 0x0 0x0 0x0 0x40000000>;
+
+              gic: interrupt-controller@8000000 {
+                compatible = "arm,gic-400", "arm,cortex-a15-gic";
+                unixnu,adt-name = "intc";
+                #interrupt-cells = <3>;
+                interrupt-controller;
+                reg = <0x0 0x08000000 0x0 0x00010000>,
+                      <0x0 0x08010000 0x0 0x00010000>;
+              };
+
+              uart0: serial@9000000 {
+                compatible = "arm,pl011", "arm,primecell";
+                reg = <0x0 0x09000000 0x0 0x1000>;
+                interrupts = <0 1 4>;
+                status = "okay";
+              };
+            };
+          };
+          EOF
+
+          dtc -I dts -O dtb -o /tmp/qemu-gicv2.dtb /tmp/qemu-gicv2.dts
+          python3 UniXNU/scripts/make-adt.py \
+            --dtb /tmp/qemu-gicv2.dtb \
+            --os-profile UniXNU/profiles/os/ipados-17.7.11-21H461/profile.toml \
+            --board device/board.toml \
+            --unique-chip-id A515F001 \
+            --data-ramdisk --trust-cache \
+            --output /tmp/qemu-gicv2.adt
+
+          cp /tmp/art/UniXNU/out/a51/ipados-17.7.11-21H461/a51/payload/payload.img /tmp/qemu-payload.img
+          mdir -i /tmp/qemu-payload.img ::/EFI/UniXNU ::/EFI/UniXNU/Payloads || true
+          mcopy -o -i /tmp/qemu-payload.img /tmp/qemu-gicv2.adt ::/EFI/UniXNU/Payloads/kernel.macho.adt
+          mcopy -i /tmp/qemu-payload.img ::/EFI/UniXNU/unixnu.toml /tmp/unixnu.toml
+          sed -i 's/timeout = .*/timeout = 1/' /tmp/unixnu.toml
+          sed -i 's/args = "/args = "serial=3 /' /tmp/unixnu.toml
+          cat /tmp/unixnu.toml
+          mcopy -o -i /tmp/qemu-payload.img /tmp/unixnu.toml ::/EFI/UniXNU/unixnu.toml
+          mmd -i /tmp/qemu-payload.img ::/EFI/BOOT || true
+          mcopy -i /tmp/qemu-payload.img ::/EFI/UniXNU/UniXNU.efi /tmp/UniXNU.efi
+          mcopy -o -i /tmp/qemu-payload.img /tmp/UniXNU.efi ::/EFI/BOOT/BOOTAA64.EFI
+
+          echo "=== Launching QEMU virt (gic-version=2, cortex-a53) for ${{ inputs.timeout_sec }}s ==="
+          timeout "${{ inputs.timeout_sec }}" qemu-system-aarch64 \
+            -machine virt,gic-version=2 \
+            -cpu cortex-a53 \
+            -m 2048 \
+            -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+            -nographic \
+            -serial mon:stdio \
+            -drive if=none,id=hd0,format=raw,file=/tmp/qemu-payload.img \
+            -device virtio-blk-pci,drive=hd0 \
+            || true
