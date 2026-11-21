@@ -269,7 +269,7 @@ jobs:
               cmds.append(f"x/10s *(unsigned long *){hex(syms['_debug_buf_base'])}")
           if "_smsg_bufc" in syms:
               base = syms["_smsg_bufc"]
-              cmds.append(f"dump binary memory /tmp/qemu-out/dmesg.txt {hex(base)} {hex(base + 0x4000)}")
+              cmds.append(f"dump binary memory /tmp/qemu-out/dmesg.txt {hex(base)} {hex(base + 0x20000)}")
           cmds.append("detach")
           cmds.append("quit")
 
