@@ -12,7 +12,7 @@
  		if (gc_enabled) {
 --- a/pexpert/arm/pe_kprintf.c
 +++ b/pexpert/arm/pe_kprintf.c
-@@ -58,10 +58,21 @@
+@@ -58,7 +58,20 @@
 +extern void vcputc(int l, int u, int c);
 +
 +static void
@@ -28,10 +28,8 @@
  PE_init_kprintf(void)
  {
  	if (boot_progress_active()) { PE_kputc = boot_progress_putc; return; }
++	PE_kputc = fb_kputc_crlf;
++	return;
  	if (serial_init()) {
  		PE_kputc = serial_putc_crlf;
  	} else {
--		PE_kputc = PE_stub_putc;
-+		PE_kputc = fb_kputc_crlf;
- 	}
- }
