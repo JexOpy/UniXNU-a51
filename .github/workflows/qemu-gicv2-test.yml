@@ -45,8 +45,9 @@ jobs:
 
       - name: Extract kernel.macho from payload.img
         run: |
-          ls -lh /tmp/a51-images
-          mcopy -i /tmp/a51-images/payload.img ::/EFI/UniXNU/kernel.macho /tmp/kernel.macho
+          PAYLOAD=$(find /tmp/a51-images -name payload.img -type f | head -n 1)
+          echo "Found payload: $PAYLOAD"
+          mcopy -i "$PAYLOAD" ::/EFI/UniXNU/kernel.macho /tmp/kernel.macho
           ls -lh /tmp/kernel.macho
           file /tmp/kernel.macho
 
