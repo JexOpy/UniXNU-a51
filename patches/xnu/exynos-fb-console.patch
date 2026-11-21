@@ -1,0 +1,37 @@
+--- a/osfmk/console/video_console.c
++++ b/osfmk/console/video_console.c
+@@ -1231,6 +1231,9 @@
+ vcputc_options(char c, __unused bool poll)
+ {
+ 	if (boot_progress_active()) { boot_progress_putc(c); return; }
++	if (gc_initialized && !gc_enabled) {
++		gc_enabled = TRUE;
++	}
+ 	if (gc_initialized && gc_enabled) {
+ 		VCPUTC_LOCK_LOCK();
+ 		if (gc_enabled) {
+--- a/pexpert/arm/pe_kprintf.c
++++ b/pexpert/arm/pe_kprintf.c
+@@ -56,11 +56,22 @@
++extern void vcputc(int l, int u, int c);
++
++static void
++fb_kputc_crlf(char c)
++{
++	if (c == '\n') {
++		vcputc(0, 0, '\r');
++	}
++	vcputc(0, 0, c);
++}
++
+ static void
+ PE_init_kprintf(void)
+ {
+ 	if (boot_progress_active()) { PE_kputc = boot_progress_putc; return; }
+ 	if (serial_init()) {
+ 		PE_kputc = serial_putc_crlf;
+ 	} else {
+-		PE_kputc = PE_stub_putc;
++		PE_kputc = fb_kputc_crlf;
+ 	}
+ }

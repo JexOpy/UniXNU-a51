@@ -1,2 +1,3 @@
 # Galaxy A51 (SM-A515F) XNU kernel patch series (applied after os:patches/xnu/series).
 arm64-platform-sleep-hook.patch
+exynos-fb-console.patch
