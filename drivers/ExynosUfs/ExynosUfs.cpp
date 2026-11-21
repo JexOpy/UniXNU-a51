@@ -129,8 +129,8 @@ public:
   IOReturn doEjectMedia() override { return kIOReturnUnsupported; }
   IOReturn doFormatMedia(UInt64) override { return kIOReturnUnsupported; }
   UInt32   doGetFormatCapacities(UInt64 *, UInt32) const override { return 0; }
-  IOReturn doLockUnlockMedia(bool) override { return kIOReturnSuccess; }
-  IOReturn doSynchronizeCache() { return kIOReturnSuccess; }
+  IOReturn doLockUnlockMedia(bool) { return kIOReturnSuccess; }
+  IOReturn doSynchronizeCache() override { return kIOReturnSuccess; }
   char    *getVendorString() override { return const_cast<char *>("Samsung"); }
   char    *getProductString() override { return const_cast<char *>("Exynos9611-UFS"); }
   char    *getRevisionString() override { return const_cast<char *>("2.0"); }
