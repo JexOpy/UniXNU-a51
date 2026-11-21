@@ -96,7 +96,11 @@ jobs:
             git -C "$UEFI_ABS/Mu_Basecore" apply --check "$UEFI_ABS/Resources/MuPatches/$p" && \
               git -C "$UEFI_ABS/Mu_Basecore" apply "$UEFI_ABS/Resources/MuPatches/$p"
           done
-          UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS" --dtb "$UEFI_ABS/Resources/DTBs/a51.dtb"
+          cat > unixnu.local.toml <<EOF
+[bootimg]
+dtb = "$UEFI_ABS/Resources/DTBs/a51.dtb"
+EOF
+          UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
 
       - name: Pack Odin tar
         working-directory: device
