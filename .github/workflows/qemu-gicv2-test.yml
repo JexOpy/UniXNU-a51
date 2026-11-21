@@ -30,10 +30,10 @@ jobs:
           ref: main
           path: UniXNU
 
-      - name: Install QEMU, LLVM, dtc, mtools
+      - name: Install QEMU, LLVM, dtc, mtools, gdb-multiarch
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-arm device-tree-compiler mtools clang lld llvm
+          sudo apt-get install -y -qq qemu-system-arm device-tree-compiler mtools clang lld llvm gdb-multiarch
 
       - name: Download built images artifact
         uses: actions/download-artifact@v4
@@ -175,29 +175,104 @@ jobs:
           ], check=True)
           PYEOF
 
-          for CPU in cortex-a53; do
-            echo "========== RUNNING QEMU -cpu $CPU =========="
-            rm -f /tmp/qemu-out/serial-$CPU.log /tmp/qemu-out/stderr-$CPU.log
-            timeout 30 qemu-system-aarch64 \
-              -M virt,gic-version=2,virtualization=off,secure=off \
-              -accel tcg \
-              -cpu "$CPU" \
-              -m 1024 \
-              -smp 1 \
-              -display none \
-              -monitor none \
-              -nic none \
-              -no-reboot \
-              -serial "file:/tmp/qemu-out/serial-$CPU.log" \
-              -kernel /tmp/qemu-out/entry.bin \
-              -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x5007c000,force-raw=on \
-              -device loader,file=/tmp/qemu-out/boot-args.bin,addr=0x55000000,force-raw=on \
-              2>"/tmp/qemu-out/stderr-$CPU.log" || true
+          echo "========== RUNNING QEMU -cpu cortex-a53 WITH GDB STUB =========="
+          rm -f /tmp/qemu-out/serial.log /tmp/qemu-out/stderr.log
+          qemu-system-aarch64 \
+            -M virt,gic-version=2,virtualization=off,secure=off \
+            -accel tcg \
+            -cpu cortex-a53 \
+            -m 1024 \
+            -smp 1 \
+            -display none \
+            -monitor none \
+            -nic none \
+            -no-reboot \
+            -gdb tcp::1234 \
+            -serial file:/tmp/qemu-out/serial.log \
+            -kernel /tmp/qemu-out/entry.bin \
+            -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x5007c000,force-raw=on \
+            -device loader,file=/tmp/qemu-out/boot-args.bin,addr=0x55000000,force-raw=on \
+            2>/tmp/qemu-out/stderr.log &
+          QPID=$!
+          sleep 15
 
-            echo "---------- [$CPU] PL011 UART SERIAL LOG ----------"
-            cat "/tmp/qemu-out/serial-$CPU.log" || true
-            echo "---------- [$CPU] END SERIAL LOG ----------"
-          done
+          python3 - << 'GDBEOF'
+          import struct, subprocess
+          m = open("/tmp/kernel.macho", "rb").read()
+          ncmds = struct.unpack_from("<I", m, 16)[0]
+          off = 32
+          syms = {}
+          sym_list = []
+          for _ in range(ncmds):
+              cmd, sz = struct.unpack_from("<II", m, off)
+              if cmd == 2:
+                  symoff, nsyms, stroff, strsize = struct.unpack_from("<IIII", m, off + 8)
+                  for i in range(nsyms):
+                      strx, stype, sect, desc, val = struct.unpack_from("<IBBHQ", m, symoff + i*16)
+                      if (stype & 0xe0) == 0 and (stype & 0x0e) == 0x0e and val >= 0xfffffff004000000:
+                          end = m.find(b"\x00", stroff + strx)
+                          name = m[stroff+strx:end].decode("ascii", "ignore")
+                          syms[name] = val
+                          sym_list.append((val, name))
+              off += sz
+          sym_list.sort()
+          def resolve(addr):
+              lo, hi = 0, len(sym_list) - 1
+              best = None
+              while lo <= hi:
+                  mid = (lo + hi) // 2
+                  if sym_list[mid][0] <= addr:
+                      best = sym_list[mid]
+                      lo = mid + 1
+                  else:
+                      hi = mid - 1
+              return f"{best[1]}+{hex(addr - best[0])}" if best else hex(addr)
+
+          for k in ("_debug_buf_base", "_debug_buf_ptr", "_msgbufp", "_panicstr", "_PE_state"):
+              print(f"SYM {k} = {hex(syms[k]) if k in syms else 'NOT FOUND'}")
+
+          cmds = [
+              "set pagination off",
+              "set architecture aarch64",
+              "target remote 127.0.0.1:1234",
+              "info reg pc lr sp x0 x1 x2 x3 x29",
+              "x/4i $pc",
+          ]
+          if "_panicstr" in syms:
+              cmds.append(f"printf \"\\n=== PANICSTR ===\\n\"")
+              cmds.append(f"x/gx {hex(syms['_panicstr'])}")
+              cmds.append(f"x/s *(unsigned long *){hex(syms['_panicstr'])}")
+          if "_debug_buf_base" in syms:
+              cmds.append(f"printf \"\\n=== DEBUG_BUF ===\\n\"")
+              cmds.append(f"x/gx {hex(syms['_debug_buf_base'])}")
+              cmds.append(f"x/100s *(unsigned long *){hex(syms['_debug_buf_base'])}")
+          if "_msgbufp" in syms:
+              cmds.append(f"printf \"\\n=== MSGBUF ===\\n\"")
+              cmds.append(f"x/4gx *(unsigned long *){hex(syms['_msgbufp'])}")
+              cmds.append(f"x/100s *(unsigned long *)(*(unsigned long *){hex(syms['_msgbufp'])} + 0x18)")
+          cmds.append("detach")
+          cmds.append("quit")
+
+          args = ["gdb-multiarch", "-batch"]
+          for c in cmds:
+              args += ["-ex", c]
+          res = subprocess.run(args, capture_output=True, text=True, timeout=20)
+          print(res.stdout)
+          if res.stderr:
+              print("GDB STDERR:", res.stderr[:1000])
+          for line in res.stdout.splitlines():
+              for reg in ("pc ", "lr "):
+                  if line.startswith(reg):
+                      parts = line.split()
+                      if len(parts) >= 2 and parts[1].startswith("0x"):
+                          addr = int(parts[1], 16)
+                          print(f"RESOLVED {reg.strip().upper()} {hex(addr)} -> {resolve(addr)}")
+          GDBEOF
+
+          kill "$QPID" 2>/dev/null || true
+          echo "---------- PL011 UART SERIAL LOG ----------"
+          cat /tmp/qemu-out/serial.log || true
+          echo "---------- END SERIAL LOG ----------"
 
       - name: Upload QEMU serial log
         uses: actions/upload-artifact@v4
