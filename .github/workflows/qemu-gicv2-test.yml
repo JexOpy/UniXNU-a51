@@ -237,6 +237,10 @@ jobs:
               "target remote 127.0.0.1:1234",
               "info reg pc lr sp x0 x1 x2 x3 x29",
               "x/4i $pc",
+              "printf \"\\n=== PANIC SAVED STATE / STACK ===\\n\"",
+              "x/40gx $x1",
+              "printf \"\\n=== STACK ===\\n\"",
+              "x/32gx $sp",
           ]
           if "_panicstr" in syms:
               cmds.append(f"printf \"\\n=== PANICSTR ===\\n\"")
@@ -245,11 +249,10 @@ jobs:
           if "_debug_buf_base" in syms:
               cmds.append(f"printf \"\\n=== DEBUG_BUF ===\\n\"")
               cmds.append(f"x/gx {hex(syms['_debug_buf_base'])}")
-              cmds.append(f"x/100s *(unsigned long *){hex(syms['_debug_buf_base'])}")
+              cmds.append(f"x/10s *(unsigned long *){hex(syms['_debug_buf_base'])}")
           if "_msgbufp" in syms:
               cmds.append(f"printf \"\\n=== MSGBUF ===\\n\"")
               cmds.append(f"x/4gx *(unsigned long *){hex(syms['_msgbufp'])}")
-              cmds.append(f"x/100s *(unsigned long *)(*(unsigned long *){hex(syms['_msgbufp'])} + 0x18)")
           cmds.append("detach")
           cmds.append("quit")
 
@@ -260,13 +263,13 @@ jobs:
           print(res.stdout)
           if res.stderr:
               print("GDB STDERR:", res.stderr[:1000])
-          for line in res.stdout.splitlines():
-              for reg in ("pc ", "lr "):
-                  if line.startswith(reg):
-                      parts = line.split()
-                      if len(parts) >= 2 and parts[1].startswith("0x"):
-                          addr = int(parts[1], 16)
-                          print(f"RESOLVED {reg.strip().upper()} {hex(addr)} -> {resolve(addr)}")
+          import re
+          seen = set()
+          for m_hex in re.finditer(r"0xfffffff00[0-9a-f]{7}", res.stdout):
+              addr = int(m_hex.group(0), 16)
+              if addr not in seen:
+                  seen.add(addr)
+                  print(f"SYM-HIT {hex(addr)} -> {resolve(addr)}")
           GDBEOF
 
           kill "$QPID" 2>/dev/null || true
