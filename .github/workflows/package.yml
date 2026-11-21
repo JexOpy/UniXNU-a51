@@ -96,8 +96,8 @@ jobs:
             git -C "$UEFI_ABS/Mu_Basecore" apply --check "$UEFI_ABS/Resources/MuPatches/$p" && \
               git -C "$UEFI_ABS/Mu_Basecore" apply "$UEFI_ABS/Resources/MuPatches/$p"
           done
-          printf '[bootimg]\ndtb = "%s/Resources/DTBs/a51.dtb"\n' "$UEFI_ABS" > unixnu.local.toml
-          UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
+          UNIXNU_DTB="$PWD/../UniXNU/out/a51/ipados-17.7.11-21H461/a51/device-tree/hardware.dtb" \
+            UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
 
       - name: Pack Odin tar
         working-directory: device
@@ -120,3 +120,4 @@ jobs:
             UniXNU/out/a51/*/*/kernel/kernel.macho
             UniXNU/out/a51/*/*/package.manifest.json
             UniXNU/out/a51/a51-unixnu-*.tar
+            uefi-a51/Build/a51Pkg/*/FV/SILICIUM_UEFI.fd
