@@ -145,10 +145,12 @@ jobs:
 
           out = Path("/tmp/qemu-out")
           boot_args = "${{ github.event.inputs.boot_args || '-v serial=3 debug=0x14e' }}"
+          # Match virtual_base mod 2MB (0x7c000) so XNU L2 block mappings align identically to DarwinBoot
+          phys_base = 0x5007c000
           report = probe.prepare(
               Path("/tmp/kernel.macho"),
               out,
-              phys_base=0x50000000,
+              phys_base=phys_base,
               boot_args_pa=0x5ff00000,
               device_tree=Path("/tmp/qemu-gicv2.adt"),
               command_line=boot_args,
@@ -188,7 +190,7 @@ jobs:
               -d int -D "/tmp/qemu-out/int-$CPU.log" \
               -serial "file:/tmp/qemu-out/serial-$CPU.log" \
               -kernel /tmp/qemu-out/entry.bin \
-              -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x50000000,force-raw=on \
+              -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x5007c000,force-raw=on \
               -device loader,file=/tmp/qemu-out/boot-args.bin,addr=0x5ff00000,force-raw=on \
               2>"/tmp/qemu-out/stderr-$CPU.log" || true
 
