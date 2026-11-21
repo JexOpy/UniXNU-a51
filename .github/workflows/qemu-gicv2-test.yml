@@ -104,6 +104,7 @@ jobs:
                   ('random-seed', os.urandom(256)),
                   ('dram-base', struct.pack('<Q', 0x40000000)),
                   ('dram-size', struct.pack('<Q', 0x20000000)),
+                  ('crypto-hash-method', b'sha2-384\0'),
               ], [
                   node('memory-map', []),
                   node('manifest-properties', []),
