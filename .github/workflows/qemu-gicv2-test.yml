@@ -250,10 +250,9 @@ jobs:
               cmds.append(f"printf \"\\n=== DEBUG_BUF ===\\n\"")
               cmds.append(f"x/gx {hex(syms['_debug_buf_base'])}")
               cmds.append(f"x/10s *(unsigned long *){hex(syms['_debug_buf_base'])}")
-          if "_msgbufp" in syms:
-              cmds.append(f"printf \"\\n=== MSGBUF ===\\n\"")
-              cmds.append(f"x/4gx *(unsigned long *){hex(syms['_msgbufp'])}")
-              cmds.append(f"dump binary memory /tmp/qemu-out/dmesg.txt *(unsigned long *)(*(unsigned long *){hex(syms['_msgbufp'])} + 0x10) (*(unsigned long *)(*(unsigned long *){hex(syms['_msgbufp'])} + 0x10) + 0x4000)")
+          if "_smsg_bufc" in syms:
+              base = syms["_smsg_bufc"]
+              cmds.append(f"dump binary memory /tmp/qemu-out/dmesg.txt {hex(base)} {hex(base + 0x4000)}")
           cmds.append("detach")
           cmds.append("quit")
 
