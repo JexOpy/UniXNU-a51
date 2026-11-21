@@ -143,6 +143,9 @@
     };
 };
 
-// Initial bring-up enables cpu0 (Cortex-A53 MPIDR 0x0) and GIC-400 only.
-// Secondary cores (cpu1..cpu7), UFS, DWC3 USB, DECON, and Melfas mss100 touch
+// Initial bring-up enables cpu0 (Cortex-A53 MPIDR 0x0), GIC-400, and Exynos 9611 UFS 2.0.
+// Secondary cores (cpu1..cpu7), DWC3 USB, DECON, and Melfas mss100 touch
 // (i2c_4 @ 0x48, IRQ gpa0-0) stay disabled until their XNU drivers are adapted.
+&ufs {
+    status = "okay";
+};

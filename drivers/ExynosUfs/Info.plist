@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.unixnu.driver.ExynosUfs</string>
+  <key>CFBundleName</key>
+  <string>ExynosUfs</string>
+  <key>CFBundleVersion</key>
+  <string>1.0.0</string>
+  <key>IOKitPersonalities</key>
+  <dict>
+    <key>ExynosUfs</key>
+    <dict>
+      <key>CFBundleIdentifier</key>
+      <string>com.unixnu.driver.ExynosUfs</string>
+      <key>IOClass</key>
+      <string>ExynosUfs</string>
+      <key>IOProviderClass</key>
+      <string>IOPlatformDevice</string>
+      <key>IONameMatch</key>
+      <array>
+        <string>samsung,exynos-ufs</string>
+        <string>ufs</string>
+      </array>
+    </dict>
+  </dict>
+</dict>
+</plist>
