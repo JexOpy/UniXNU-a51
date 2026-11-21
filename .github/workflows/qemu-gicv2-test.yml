@@ -47,7 +47,10 @@ jobs:
         run: |
           PAYLOAD=$(find /tmp/a51-images -name payload.img -type f | head -n 1)
           echo "Found payload: $PAYLOAD"
-          mcopy -i "$PAYLOAD" ::/EFI/UniXNU/kernel.macho /tmp/kernel.macho
+          mdir -/ -b -i "$PAYLOAD" ::/
+          KPATH=$(mdir -/ -b -i "$PAYLOAD" ::/ | grep -i 'kernel\.macho$' | head -n 1)
+          echo "Found kernel inside payload: $KPATH"
+          mcopy -i "$PAYLOAD" "$KPATH" /tmp/kernel.macho
           ls -lh /tmp/kernel.macho
           file /tmp/kernel.macho
 
