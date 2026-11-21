@@ -97,6 +97,10 @@ jobs:
                       ('compatible', b'arm,gic-400\0'),
                       ('reg', struct.pack('<4Q', 0, 0x10000, 0x10000, 0x10000)),
                   ]),
+                  node('uart0', [
+                      ('compatible', b'arm,pl011\0'),
+                      ('reg', struct.pack('<2Q', 0x01000000, 0x1000)),
+                  ]),
               ]),
           ])
           Path('/tmp/qemu-gicv2.adt').write_bytes(tree)
@@ -143,28 +147,33 @@ jobs:
           ], check=True)
           PYEOF
 
-          TIMEOUT_SEC="${{ github.event.inputs.timeout_sec || '30' }}"
-          timeout "${TIMEOUT_SEC}" qemu-system-aarch64 \
-            -M virt,gic-version=2,virtualization=off,secure=off \
-            -accel tcg \
-            -cpu cortex-a53 \
-            -m 512 \
-            -smp 1 \
-            -display none \
-            -monitor none \
-            -nic none \
-            -no-reboot \
-            -serial file:/tmp/qemu-out/serial.log \
-            -kernel /tmp/qemu-out/entry.bin \
-            -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x50000000,force-raw=on \
-            -device loader,file=/tmp/qemu-out/boot-args.bin,addr=0x5ff00000,force-raw=on \
-            2>/tmp/qemu-out/qemu-stderr.log || true
+          for CPU in cortex-a53 cortex-a710; do
+            echo "========== RUNNING QEMU -cpu $CPU =========="
+            rm -f /tmp/qemu-out/serial-$CPU.log /tmp/qemu-out/int-$CPU.log /tmp/qemu-out/stderr-$CPU.log
+            timeout 15 qemu-system-aarch64 \
+              -M virt,gic-version=2,virtualization=off,secure=off \
+              -accel tcg \
+              -cpu "$CPU" \
+              -m 512 \
+              -smp 1 \
+              -display none \
+              -monitor none \
+              -nic none \
+              -no-reboot \
+              -d int -D "/tmp/qemu-out/int-$CPU.log" \
+              -serial "file:/tmp/qemu-out/serial-$CPU.log" \
+              -kernel /tmp/qemu-out/entry.bin \
+              -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x50000000,force-raw=on \
+              -device loader,file=/tmp/qemu-out/boot-args.bin,addr=0x5ff00000,force-raw=on \
+              2>"/tmp/qemu-out/stderr-$CPU.log" || true
 
-          echo "========== QEMU STDERR =========="
-          cat /tmp/qemu-out/qemu-stderr.log || true
-          echo "========== PL011 UART SERIAL LOG =========="
-          cat /tmp/qemu-out/serial.log || true
-          echo "========== END SERIAL LOG =========="
+            echo "---------- [$CPU] PL011 UART SERIAL LOG ----------"
+            cat "/tmp/qemu-out/serial-$CPU.log" || true
+            echo "---------- [$CPU] FIRST 40 LINES OF INT LOG ----------"
+            head -n 40 "/tmp/qemu-out/int-$CPU.log" || true
+            echo "---------- [$CPU] LAST 40 LINES OF INT LOG ----------"
+            tail -n 40 "/tmp/qemu-out/int-$CPU.log" || true
+          done
 
       - name: Upload QEMU serial log
         uses: actions/upload-artifact@v4
