@@ -108,6 +108,8 @@ jobs:
           done
           git -C ../UniXNU/drivers/ArmCpu apply --check "$PWD/patches/armcpu-gicv2.patch" && \
             git -C ../UniXNU/drivers/ArmCpu apply "$PWD/patches/armcpu-gicv2.patch"
+          cp "$PWD/drivers/ExynosUfs/ExynosUfs.cpp" ../UniXNU/drivers/RamBlock/ExynosUfs.cpp
+          printf '\n#include "ExynosUfs.cpp"\n' >> ../UniXNU/drivers/RamBlock/NativeRamBlock.cpp
           UNIXNU_DTB="$PWD/../UniXNU/out/a51/ipados-17.7.11-21H461/a51/device-tree/hardware.dtb" \
             UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
 
