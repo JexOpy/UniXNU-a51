@@ -56,68 +56,52 @@ jobs:
 
       - name: Build QEMU virt GICv2 ADT (arm,gic-400 + PL011)
         run: |
-          cat << 'EOF' > /tmp/qemu-gicv2.dts
-          /dts-v1/;
+          python3 - << 'PYEOF'
+          import os, struct, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path("UniXNU/scripts").resolve()))
+          from unixnu.devicetree import node
 
-          / {
-            compatible = "linux,dummy-virt";
-            model = "QEMU Virt GICv2 (A51 ArmCpu Test)";
-            #address-cells = <2>;
-            #size-cells = <2>;
-
-            chosen {
-              stdout-path = "/pl011@9000000";
-            };
-
-            memory@40000000 {
-              device_type = "memory";
-              reg = <0x0 0x40000000 0x0 0x20000000>;
-            };
-
-            cpus {
-              #address-cells = <1>;
-              #size-cells = <0>;
-
-              cpu@0 {
-                device_type = "cpu";
-                compatible = "arm,cortex-a53";
-                reg = <0x0>;
-                enable-method = "psci";
-              };
-            };
-
-            psci {
-              compatible = "arm,psci-0.2";
-              method = "hvc";
-            };
-
-            timer {
-              compatible = "arm,armv8-timer";
-              interrupt-parent = <&intc>;
-              interrupts = <1 13 0x4>, <1 14 0x4>, <1 11 0x4>, <1 10 0x4>;
-              always-on;
-            };
-
-            intc: intc@8000000 {
-              compatible = "arm,gic-400", "arm,cortex-a15-gic";
-              interrupt-controller;
-              #interrupt-cells = <3>;
-              reg = <0x0 0x08000000 0x0 0x00010000>,
-                    <0x0 0x08010000 0x0 0x00010000>;
-            };
-
-            pl011@9000000 {
-              compatible = "arm,pl011", "arm,primecell";
-              reg = <0x0 0x09000000 0x0 0x00001000>;
-              interrupt-parent = <&intc>;
-              interrupts = <0 1 4>;
-              clock-names = "uartclk", "apb_pclk";
-            };
-          };
-          EOF
-          dtc -I dts -O dtb -o /tmp/qemu-gicv2.dtb /tmp/qemu-gicv2.dts
-          python3 UniXNU/tools/dt2adt.py /tmp/qemu-gicv2.dtb /tmp/qemu-gicv2.adt
-          ls -lh /tmp/qemu-gicv2.dtb /tmp/qemu-gicv2.adt
+          timebase = 62500000
+          cpu0 = node('cpu0', [
+              ('state', b'running\0'),
+              ('reg', struct.pack('<I', 0)),
+              ('device_type', b'cpu\0'),
+              ('compatible', b'arm,cortex-a53\0'),
+              ('timebase-frequency', struct.pack('<I', timebase)),
+              ('clock-frequency', struct.pack('<I', 1000000000)),
+          ])
+          tree = node('device-tree', [
+              ('model', b'qemu-gicv2-a51-test\0'),
+              ('compatible', b'linux,dummy-virt\0'),
+          ], [
+              node('chosen', [
+                  ('random-seed', os.urandom(256)),
+                  ('dram-base', struct.pack('<Q', 0x40000000)),
+                  ('dram-size', struct.pack('<Q', 0x20000000)),
+              ], [
+                  node('memory-map', []),
+                  node('manifest-properties', []),
+              ]),
+              node('cpus', children=[cpu0]),
+              node('defaults', [('vmm-present', struct.pack('<I', 1))]),
+              node('product', [
+                  ('product-name', b'QEMU virt GICv2\0'),
+                  ('model', b'linux,dummy-virt\0'),
+              ]),
+              node('arm-io', [
+                  ('device_type', b'qemu-virt\0'),
+                  ('ranges', struct.pack('<QQQ', 0, 0x08000000, 0x04000000)),
+              ], [
+                  node('intc', [
+                      ('compatible', b'arm,gic-400\0'),
+                      ('reg', struct.pack('<4Q', 0, 0x10000, 0x10000, 0x10000)),
+                  ]),
+              ]),
+          ])
+          Path('/tmp/qemu-gicv2.adt').write_bytes(tree)
+          print(f"Generated /tmp/qemu-gicv2.adt: {len(tree)} bytes")
+          PYEOF
 
       - name: Prepare entry.bin + kernel-flat.bin + boot-args.bin and run QEMU GICv2
         run: |
