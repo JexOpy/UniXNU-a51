@@ -350,3 +350,33 @@ IOReturn ExynosUfs::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block,
   IOStorage::complete(completion, status, doneBytes);
   return kIOReturnSuccess;
 }
+
+extern "C" void exynos_ufs_try_attach(void) {
+  static bool attempted = false;
+  if (attempted) {
+    return;
+  }
+  attempted = true;
+
+  IORegistryEntry *entry = IORegistryEntry::fromPath("/arm-io/ufs", gIODTPlane);
+  IOService *provider = OSDynamicCast(IOService, entry);
+  if (!provider) {
+    if (entry) {
+      entry->release();
+    }
+    IOLog("ExynosUfs: /arm-io/ufs IOService not found\n");
+    return;
+  }
+  ExynosUfs *drv = OSTypeAlloc(ExynosUfs);
+  if (drv && drv->init(nullptr)) {
+    if (drv->attach(provider)) {
+      if (!drv->start(provider)) {
+        drv->detach(provider);
+      }
+    }
+  }
+  if (drv) {
+    drv->release();
+  }
+  provider->release();
+}

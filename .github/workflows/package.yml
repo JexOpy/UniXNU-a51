@@ -110,6 +110,14 @@ jobs:
             git -C ../UniXNU/drivers/ArmCpu apply "$PWD/patches/armcpu-gicv2.patch"
           cp "$PWD/drivers/ExynosUfs/ExynosUfs.cpp" ../UniXNU/drivers/RamBlock/ExynosUfs.cpp
           printf '\n#include "ExynosUfs.cpp"\n' >> ../UniXNU/drivers/RamBlock/NativeRamBlock.cpp
+          python3 -c '
+          from pathlib import Path
+          p = Path("../UniXNU/drivers/RamBlock/NativeRamBlock.cpp")
+          s = p.read_text()
+          s = s.replace("if (!IOBlockStorageDevice::start(provider)) return false;",
+                        "extern \"C\" void exynos_ufs_try_attach(void);\n  exynos_ufs_try_attach();\n  if (!IOBlockStorageDevice::start(provider)) return false;", 1)
+          p.write_text(s)
+          '
           UNIXNU_DTB="$PWD/../UniXNU/out/a51/ipados-17.7.11-21H461/a51/device-tree/hardware.dtb" \
             UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
 
