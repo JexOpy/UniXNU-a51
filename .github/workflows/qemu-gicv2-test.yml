@@ -49,9 +49,12 @@ jobs:
           echo "Found payload: $PAYLOAD"
           mdir -/ -b -i "$PAYLOAD" ::/
           KPATH=$(mdir -/ -b -i "$PAYLOAD" ::/ | grep -i 'kernel\.macho$' | head -n 1)
+          APATH=$(mdir -/ -b -i "$PAYLOAD" ::/ | grep -i 'kernel\.macho\.adt$' | head -n 1)
           echo "Found kernel inside payload: $KPATH"
+          echo "Found ADT inside payload: $APATH"
           mcopy -i "$PAYLOAD" "$KPATH" /tmp/kernel.macho
-          ls -lh /tmp/kernel.macho
+          mcopy -i "$PAYLOAD" "$APATH" /tmp/a51.adt
+          ls -lh /tmp/kernel.macho /tmp/a51.adt
           file /tmp/kernel.macho
           python3 - << 'SYMEOF'
           import struct
@@ -149,14 +152,27 @@ jobs:
           # Match virtual_base mod 2MB (0x7c000) so XNU L2 block mappings align identically to DarwinBoot
           phys_base = 0x5007c000
           boot_args_pa = 0x55000000
+          adt_path = Path("/tmp/a51.adt")
+          adt_bytes = adt_path.read_bytes()
+          print(f"Using REAL SM-A515F ADT: {len(adt_bytes)} bytes")
           report = probe.prepare(
               Path("/tmp/kernel.macho"),
               out,
               phys_base=phys_base,
               boot_args_pa=boot_args_pa,
-              device_tree=Path("/tmp/qemu-gicv2.adt"),
+              device_tree=None,
               command_line=boot_args,
           )
+          # Append real ADT into boot-args.bin at +0x1000 (supporting >12KB ADTs)
+          import struct
+          boot_buf = bytearray(0x1000 + ((len(adt_bytes) + 0xfff) & ~0xfff))
+          orig_boot = (out / "boot-args.bin").read_bytes()
+          boot_buf[:len(orig_boot)] = orig_boot
+          boot_buf[0x1000:0x1000 + len(adt_bytes)] = adt_bytes
+          vbase = int(report["virtual_base"], 16)
+          struct.pack_into("<Q", boot_buf, 0x20, boot_args_pa + len(boot_buf)) # topOfKernelData
+          struct.pack_into("<QI", boot_buf, 0x60, vbase + boot_args_pa + 0x1000 - phys_base, len(adt_bytes))
+          (out / "boot-args.bin").write_bytes(boot_buf)
           print(json.dumps(report, indent=2))
 
           entry_pa = int(report["entry_pa"], 16)
