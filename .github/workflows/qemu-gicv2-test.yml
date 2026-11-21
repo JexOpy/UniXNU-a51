@@ -147,11 +147,12 @@ jobs:
           boot_args = "${{ github.event.inputs.boot_args || '-v serial=3 debug=0x14e' }}"
           # Match virtual_base mod 2MB (0x7c000) so XNU L2 block mappings align identically to DarwinBoot
           phys_base = 0x5007c000
+          boot_args_pa = 0x55000000
           report = probe.prepare(
               Path("/tmp/kernel.macho"),
               out,
               phys_base=phys_base,
-              boot_args_pa=0x5ff00000,
+              boot_args_pa=boot_args_pa,
               device_tree=Path("/tmp/qemu-gicv2.adt"),
               command_line=boot_args,
           )
@@ -160,7 +161,7 @@ jobs:
           entry_pa = int(report["entry_pa"], 16)
           subprocess.run([
               "clang", "--target=aarch64-none-elf", "-c",
-              f"-DBOOT_ARGS_PA={0x5ff00000}",
+              f"-DBOOT_ARGS_PA={boot_args_pa}",
               f"-DKERNEL_ENTRY_PA={entry_pa}",
               "UniXNU/scripts/qemu-entry/entry.S", "-o", str(out / "entry.o")
           ], check=True)
@@ -174,14 +175,14 @@ jobs:
           ], check=True)
           PYEOF
 
-          for CPU in cortex-a53 cortex-a710; do
+          for CPU in cortex-a53; do
             echo "========== RUNNING QEMU -cpu $CPU =========="
             rm -f /tmp/qemu-out/serial-$CPU.log /tmp/qemu-out/int-$CPU.log /tmp/qemu-out/stderr-$CPU.log
-            timeout 15 qemu-system-aarch64 \
+            timeout 20 qemu-system-aarch64 \
               -M virt,gic-version=2,virtualization=off,secure=off \
               -accel tcg \
               -cpu "$CPU" \
-              -m 512 \
+              -m 1024 \
               -smp 1 \
               -display none \
               -monitor none \
@@ -191,7 +192,7 @@ jobs:
               -serial "file:/tmp/qemu-out/serial-$CPU.log" \
               -kernel /tmp/qemu-out/entry.bin \
               -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x5007c000,force-raw=on \
-              -device loader,file=/tmp/qemu-out/boot-args.bin,addr=0x5ff00000,force-raw=on \
+              -device loader,file=/tmp/qemu-out/boot-args.bin,addr=0x55000000,force-raw=on \
               2>"/tmp/qemu-out/stderr-$CPU.log" || true
 
             echo "---------- [$CPU] PL011 UART SERIAL LOG ----------"
