@@ -177,8 +177,8 @@ jobs:
 
           for CPU in cortex-a53; do
             echo "========== RUNNING QEMU -cpu $CPU =========="
-            rm -f /tmp/qemu-out/serial-$CPU.log /tmp/qemu-out/int-$CPU.log /tmp/qemu-out/stderr-$CPU.log
-            timeout 20 qemu-system-aarch64 \
+            rm -f /tmp/qemu-out/serial-$CPU.log /tmp/qemu-out/stderr-$CPU.log
+            timeout 30 qemu-system-aarch64 \
               -M virt,gic-version=2,virtualization=off,secure=off \
               -accel tcg \
               -cpu "$CPU" \
@@ -188,7 +188,6 @@ jobs:
               -monitor none \
               -nic none \
               -no-reboot \
-              -d int -D "/tmp/qemu-out/int-$CPU.log" \
               -serial "file:/tmp/qemu-out/serial-$CPU.log" \
               -kernel /tmp/qemu-out/entry.bin \
               -device loader,file=/tmp/qemu-out/kernel-flat.bin,addr=0x5007c000,force-raw=on \
@@ -197,10 +196,7 @@ jobs:
 
             echo "---------- [$CPU] PL011 UART SERIAL LOG ----------"
             cat "/tmp/qemu-out/serial-$CPU.log" || true
-            echo "---------- [$CPU] FIRST 40 LINES OF INT LOG ----------"
-            head -n 40 "/tmp/qemu-out/int-$CPU.log" || true
-            echo "---------- [$CPU] LAST 40 LINES OF INT LOG ----------"
-            tail -n 40 "/tmp/qemu-out/int-$CPU.log" || true
+            echo "---------- [$CPU] END SERIAL LOG ----------"
           done
 
       - name: Upload QEMU serial log
