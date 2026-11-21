@@ -85,6 +85,16 @@ jobs:
             exit 1
           fi
 
+      - name: Cache UniXNU IPSW / downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            UniXNU/cache
+            UniXNU/downloads
+          key: unixnu-cache-${{ inputs.os }}-v1
+          restore-keys: |
+            unixnu-cache-${{ inputs.os }}-
+
       - name: Package UniXNU images
         working-directory: device
         env:
