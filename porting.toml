@@ -109,6 +109,7 @@ findings = [
   "Upstream UniXNU/ArmCpu targets GICv3; Exynos 9611 uses GIC-400 (GICv2), matching the same GICv2 gap documented on Exynos 9825 (d1x), Exynos 8890 (hero2lte), and Exynos 7870 (gtaxllte).",
   "Samsung S-Boot does not program CNTFRQ_EL0; XNU and UEFI must rely on the 26 MHz DT/PCD rate.",
   "Added patches/armcpu-gicv2.patch (applied to UniXNU/drivers/ArmCpu in package.yml) implementing GIC-400 (GICv2) MMIO GICD/GICC support (mapGic, initDistributor, wakeRedistributor, enableGic, interrupt IAR/EOIR, signalCPU GICD_SGIR, quiesceCPU).",
+  "Disabled CONFIG_XNU_BOOT_PROGRESS=n and removed serial=3 from kernel_args so XNU -v verbose console text renders directly to the 1080x2400 framebuffer during early bring-up.",
 ]
 completion = [
   "Boot CPU (cpu0) handles timer IRQs and GIC-400 interrupts without panicking.",

@@ -131,7 +131,6 @@ timeout = 10
 panic_screen = true
 kernel_args = [
   "-v",
-  "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
   "fips_mode=4",
