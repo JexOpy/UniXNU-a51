@@ -12,7 +12,7 @@
  		if (gc_enabled) {
 --- a/pexpert/arm/pe_kprintf.c
 +++ b/pexpert/arm/pe_kprintf.c
-@@ -56,11 +56,22 @@
+@@ -58,10 +58,21 @@
 +extern void vcputc(int l, int u, int c);
 +
 +static void
