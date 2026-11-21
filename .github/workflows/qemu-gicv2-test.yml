@@ -253,6 +253,7 @@ jobs:
           if "_msgbufp" in syms:
               cmds.append(f"printf \"\\n=== MSGBUF ===\\n\"")
               cmds.append(f"x/4gx *(unsigned long *){hex(syms['_msgbufp'])}")
+              cmds.append(f"dump binary memory /tmp/qemu-out/dmesg.txt *(unsigned long *)(*(unsigned long *){hex(syms['_msgbufp'])} + 0x10) (*(unsigned long *)(*(unsigned long *){hex(syms['_msgbufp'])} + 0x10) + 0x4000)")
           cmds.append("detach")
           cmds.append("quit")
 
@@ -263,13 +264,13 @@ jobs:
           print(res.stdout)
           if res.stderr:
               print("GDB STDERR:", res.stderr[:1000])
-          import re
-          seen = set()
-          for m_hex in re.finditer(r"0xfffffff00[0-9a-f]{7}", res.stdout):
-              addr = int(m_hex.group(0), 16)
-              if addr not in seen:
-                  seen.add(addr)
-                  print(f"SYM-HIT {hex(addr)} -> {resolve(addr)}")
+          import pathlib
+          dp = pathlib.Path("/tmp/qemu-out/dmesg.txt")
+          if dp.exists():
+              txt = dp.read_bytes().split(b"\x00")[0].decode("utf-8", "replace")
+              print("========== FULL XNU DMESG (MSGBUF) ==========")
+              print(txt)
+              print("========== END XNU DMESG ==========")
           GDBEOF
 
           kill "$QPID" 2>/dev/null || true
