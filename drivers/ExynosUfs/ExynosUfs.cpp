@@ -163,9 +163,100 @@ public:
   IOReturn doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block,
                             UInt64 nblks, IOStorageAttributes *attributes,
                             IOStorageCompletion *completion) override;
+
+  IOReturn readWindowBytes(uint64_t byteOffset, uint64_t byteLen,
+                           IOMemoryDescriptor *dst);
+  void parseShngroot();
+};
+
+class ExynosUfsWindow : public IOBlockStorageDevice {
+  OSDeclareDefaultStructors(ExynosUfsWindow)
+
+private:
+  ExynosUfs *parent_   = nullptr;
+  uint64_t   baseByte_ = 0;
+  uint64_t   sizeByte_ = 0;
+  uint32_t   blkSize_  = 512;
+  char       name_[32] = {};
+
+public:
+  bool initWindow(ExynosUfs *parent, const char *name,
+                  uint64_t baseByte, uint64_t sizeByte, uint32_t blkSize);
+  IOReturn doEjectMedia() override { return kIOReturnUnsupported; }
+  IOReturn doFormatMedia(UInt64) override { return kIOReturnUnsupported; }
+  UInt32   doGetFormatCapacities(UInt64 *, UInt32) const override { return 0; }
+  IOReturn doLockUnlockMedia(bool) { return kIOReturnSuccess; }
+  IOReturn doSynchronizeCache() override { return kIOReturnSuccess; }
+  char    *getVendorString() override { return const_cast<char *>("UniXNU"); }
+  char    *getProductString() override { return name_; }
+  char    *getRevisionString() override { return const_cast<char *>("1.0"); }
+  char    *getAdditionalDeviceInfoString() override { return const_cast<char *>("SHNGROOT"); }
+  IOReturn reportBlockSize(UInt64 *blockSize) override {
+    *blockSize = blkSize_;
+    return kIOReturnSuccess;
+  }
+  IOReturn reportEjectability(bool *isEjectable) override {
+    *isEjectable = false;
+    return kIOReturnSuccess;
+  }
+  IOReturn reportMaxValidBlock(UInt64 *maxBlock) override {
+    uint64_t n = sizeByte_ / blkSize_;
+    *maxBlock = n > 0 ? (n - 1) : 0;
+    return kIOReturnSuccess;
+  }
+  IOReturn reportMediaState(bool *mediaPresent, bool *changedState) override {
+    *mediaPresent = (sizeByte_ > 0);
+    *changedState = false;
+    return kIOReturnSuccess;
+  }
+  IOReturn reportRemovability(bool *isRemovable) override {
+    *isRemovable = false;
+    return kIOReturnSuccess;
+  }
+  IOReturn reportWriteProtection(bool *isWriteProtected) override {
+    *isWriteProtected = true;
+    return kIOReturnSuccess;
+  }
+  IOReturn doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block,
+                            UInt64 nblks, IOStorageAttributes *attributes,
+                            IOStorageCompletion *completion) override;
 };
 
 OSDefineMetaClassAndStructors(ExynosUfs, IOBlockStorageDevice)
+OSDefineMetaClassAndStructors(ExynosUfsWindow, IOBlockStorageDevice)
+
+bool ExynosUfsWindow::initWindow(ExynosUfs *parent, const char *name,
+                                 uint64_t baseByte, uint64_t sizeByte,
+                                 uint32_t blkSize) {
+  if (!IOBlockStorageDevice::init(nullptr)) {
+    return false;
+  }
+  parent_   = parent;
+  baseByte_ = baseByte;
+  sizeByte_ = sizeByte;
+  blkSize_  = blkSize ? blkSize : 512;
+  strlcpy(name_, name ? name : "Window", sizeof(name_));
+  return true;
+}
+
+IOReturn ExynosUfsWindow::doAsyncReadWrite(IOMemoryDescriptor *buffer,
+                                           UInt64 block, UInt64 nblks,
+                                           IOStorageAttributes *,
+                                           IOStorageCompletion *completion) {
+  if (buffer->getDirection() == kIODirectionOut) {
+    IOStorage::complete(completion, kIOReturnNotWritable, 0);
+    return kIOReturnSuccess;
+  }
+  uint64_t byteOff = block * blkSize_;
+  uint64_t byteLen = nblks * blkSize_;
+  if (byteOff >= sizeByte_ || byteLen > sizeByte_ - byteOff) {
+    IOStorage::complete(completion, kIOReturnBadArgument, 0);
+    return kIOReturnSuccess;
+  }
+  IOReturn st = parent_->readWindowBytes(baseByte_ + byteOff, byteLen, buffer);
+  IOStorage::complete(completion, st, (st == kIOReturnSuccess) ? byteLen : 0);
+  return kIOReturnSuccess;
+}
 
 bool ExynosUfs::start(IOService *provider) {
   if (!IOBlockStorageDevice::start(provider)) {
@@ -228,6 +319,7 @@ bool ExynosUfs::start(IOService *provider) {
   }
   IOLog("ExynosUfs: LUN 0 online: %llu blocks x %u bytes\n",
         (unsigned long long)blockCount_, blockSize_);
+  parseShngroot();
   registerService();
   return true;
 }
@@ -349,6 +441,99 @@ IOReturn ExynosUfs::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block,
 
   IOStorage::complete(completion, status, doneBytes);
   return kIOReturnSuccess;
+}
+
+IOReturn ExynosUfs::readWindowBytes(uint64_t byteOffset, uint64_t byteLen,
+                                    IOMemoryDescriptor *dst) {
+  IOLockLock(ioLock_);
+  IOReturn status = kIOReturnSuccess;
+  uint64_t done = 0;
+  while (done < byteLen) {
+    uint64_t curByte = byteOffset + done;
+    uint64_t lba = curByte / blockSize_;
+    uint32_t inBlkOff = static_cast<uint32_t>(curByte % blockSize_);
+    uint64_t remBytes = byteLen - done;
+    uint32_t maxChunkBlks = kBounceBytes / blockSize_;
+    uint32_t needBlks = static_cast<uint32_t>((inBlkOff + remBytes + blockSize_ - 1) / blockSize_);
+    if (needBlks > maxChunkBlks) {
+      needBlks = maxChunkBlks;
+    }
+    uint8_t cdb[16] = {};
+    cdb[0] = 0x28; // READ(10)
+    OSWriteBigInt32(cdb, 2, static_cast<uint32_t>(lba));
+    OSWriteBigInt16(cdb, 7, static_cast<uint16_t>(needBlks));
+    status = submitScsi(0, cdb, false, needBlks * blockSize_);
+    if (status != kIOReturnSuccess) {
+      break;
+    }
+    uint32_t avail = needBlks * blockSize_ - inBlkOff;
+    uint32_t copyLen = (remBytes < avail) ? static_cast<uint32_t>(remBytes) : avail;
+    dst->writeBytes(done, bounceVirt_ + inBlkOff, copyLen);
+    done += copyLen;
+  }
+  IOLockUnlock(ioLock_);
+  return status;
+}
+
+void ExynosUfs::parseShngroot() {
+  // Measured SM-A515F 128 GB UFS userdata (sda32) first LBA = 2061568 (4096 B/LBA)
+  constexpr uint64_t kUserdataFirstLba = 2061568ULL;
+  uint8_t cdb[16] = {};
+  cdb[0] = 0x28; // READ(10)
+  OSWriteBigInt32(cdb, 2, static_cast<uint32_t>(kUserdataFirstLba));
+  OSWriteBigInt16(cdb, 7, 1);
+
+  IOLockLock(ioLock_);
+  IOReturn st = submitScsi(0, cdb, false, blockSize_);
+  uint8_t hdr[4096];
+  if (st == kIOReturnSuccess) {
+    bcopy(bounceVirt_, hdr, sizeof(hdr));
+  }
+  IOLockUnlock(ioLock_);
+  if (st != kIOReturnSuccess) {
+    IOLog("ExynosUfs: failed to read SHNGROOT manifest at LBA %llu\n",
+          (unsigned long long)kUserdataFirstLba);
+    return;
+  }
+  if (bcmp(hdr, "SHNGROOT", 8) != 0) {
+    IOLog("ExynosUfs: no SHNGROOT magic at LBA %llu\n",
+          (unsigned long long)kUserdataFirstLba);
+    return;
+  }
+  uint32_t version = OSReadLittleInt32(hdr, 8);
+  uint32_t count   = OSReadLittleInt32(hdr, 12);
+  if (count > 16) {
+    count = 16;
+  }
+  IOLog("ExynosUfs: SHNGROOT v%u found (%u entries)\n", version, count);
+  uint64_t udBaseByte = kUserdataFirstLba * blockSize_;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t *e = hdr + 24 + i * 128;
+    char wname[33] = {};
+    bcopy(e, wname, 32);
+    uint64_t woff  = OSReadLittleInt64(e, 32);
+    uint64_t wsize = OSReadLittleInt64(e, 40);
+    uint32_t wblk  = OSReadLittleInt32(e, 48);
+    uint32_t wflg  = OSReadLittleInt32(e, 52);
+    if (wflg != 1 || wsize == 0) {
+      continue;
+    }
+    IOLog("ExynosUfs: publishing SHNGROOT window '%s' off=0x%llx size=0x%llx blk=%u\n",
+          wname, (unsigned long long)woff, (unsigned long long)wsize, wblk);
+    ExynosUfsWindow *win = OSTypeAlloc(ExynosUfsWindow);
+    if (win && win->initWindow(this, wname, udBaseByte + woff, wsize, wblk)) {
+      if (win->attach(this)) {
+        if (win->start(this)) {
+          win->registerService();
+        } else {
+          win->detach(this);
+        }
+      }
+    }
+    if (win) {
+      win->release();
+    }
+  }
 }
 
 extern "C" void exynos_ufs_try_attach(void) {
