@@ -141,9 +141,9 @@ kernel_args = [
 [payload.adt]
 chip_id = "207"
 unique_chip_id = "required"
-# 512 MiB contiguous window inside the measured clean low-RAM span 0x92000000-0xBAA00000 (650 MiB),
-# staying above S-Boot initrd (0x89000000) and sec_debug_next (0x91202000-0x91B88000) and below TZ hole (0xBAB00000).
-owned_memory_size = "0x20000000"
+# 256 MiB contiguous window inside the measured clean low-RAM span 0x92000000-0xBAA00000 (650 MiB),
+# avoiding UEFI fragmentation and TZASC holes below 0xBAB00000.
+owned_memory_size = "0x10000000"
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 packed_data_ramdisk = true
 
