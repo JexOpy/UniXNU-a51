@@ -1,11 +1,19 @@
 --- a/osfmk/console/video_console.c
 +++ b/osfmk/console/video_console.c
-@@ -1231,6 +1231,9 @@
+@@ -1231,6 +1231,17 @@
  vcputc_options(char c, __unused bool poll)
  {
  	if (boot_progress_active()) { boot_progress_putc(c); return; }
 +	if (gc_initialized && !gc_enabled) {
 +		gc_enabled = TRUE;
++	}
++	if (gc_initialized && c == '\n' && vinfo.v_baseaddr && vinfo.v_rowbytes && vinfo.v_height) {
++		uintptr_t fb_start = (uintptr_t)vinfo.v_baseaddr;
++		uintptr_t fb_end = fb_start + (uintptr_t)vinfo.v_rowbytes * (uintptr_t)vinfo.v_height;
++		for (uintptr_t p = fb_start; p < fb_end; p += 64) {
++			__asm__ volatile("dc cvac, %0" :: "r"(p) : "memory");
++		}
++		__asm__ volatile("dsb sy" ::: "memory");
 +	}
  	if (gc_initialized && gc_enabled) {
  		VCPUTC_LOCK_LOCK();
