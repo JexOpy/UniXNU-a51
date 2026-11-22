@@ -18,6 +18,26 @@
  	if (gc_initialized && gc_enabled) {
  		VCPUTC_LOCK_LOCK();
  		if (gc_enabled) {
+@@ -3053,6 +3064,19 @@
+ 	/* Console initialization/acquisition may clear the existing mapping. */
+ 	boot_progress_bind(vinfo.v_baseaddr, vinfo.v_width, vinfo.v_height,
+ 	    vinfo.v_rowbytes, vinfo.v_depth);
++	if (vinfo.v_baseaddr && vinfo.v_rowbytes && vinfo.v_height >= 80) {
++		uint32_t *fb = (uint32_t *)(uintptr_t)vinfo.v_baseaddr;
++		unsigned long stride = vinfo.v_rowbytes / 4;
++		for (unsigned long y = 0; y < 80; ++y) {
++			for (unsigned long x = 0; x < vinfo.v_width; ++x) {
++				fb[y * stride + x] = 0xFF0055FFu; /* BLUE: initialize_screen OK */
++			}
++		}
++		for (uintptr_t p = (uintptr_t)fb; p < (uintptr_t)fb + vinfo.v_rowbytes * 80; p += 64) {
++			__asm__ volatile("dc cvac, %0" :: "r"(p) : "memory");
++		}
++		__asm__ volatile("dsb sy" ::: "memory");
++	}
+ }
+ 
+ void vcattach(void); /* XXX gcc 4 warning cleanup */
 --- a/pexpert/arm/pe_kprintf.c
 +++ b/pexpert/arm/pe_kprintf.c
 @@ -58,7 +58,20 @@
