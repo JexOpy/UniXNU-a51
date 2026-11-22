@@ -131,7 +131,7 @@ timeout = 10
 panic_screen = true
 kernel_args = [
   "-v",
-  "debug=0x14e",
+  "debug=0x14f",
   "kt_fixed_zones=120",
   "fips_mode=4",
   "armcpu-diagnostics=1",
