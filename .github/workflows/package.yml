@@ -118,19 +118,6 @@ jobs:
                         "exynos_ufs_try_attach();\n  if (!IOBlockStorageDevice::start(provider)) return false;", 1)
           p.write_text(s)
           '
-          python3 -c '
-          from pathlib import Path
-          p = Path("../UniXNU/scripts/build-arm-driver.py")
-          s = p.read_text()
-          hook = """if identifier == "GopFramebuffer":
-              import hashlib, shutil
-              late = out / "libGopFramebuffer.late.a"
-              shutil.copyfile(archive, late)
-              (out / "build-report.json").write_text(json.dumps({"archive_sha256": hashlib.sha256(late.read_bytes()).hexdigest()}))
-          """
-          if "libGopFramebuffer.late.a" not in s:
-              p.write_text(s + "\n" + hook)
-          '
           UNIXNU_DTB="$PWD/../UniXNU/out/a51/ipados-17.7.11-21H461/a51/device-tree/hardware.dtb" \
             UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
 
