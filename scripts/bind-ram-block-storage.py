@@ -135,8 +135,30 @@ def main():
     if missing:
         raise SystemExit(f'Unrecognized IOBlockStorageDevice imports in NativeRamBlock.o: {missing}')
 
+    # NativeRamBlock.cpp declares these optional kernel/persistent-store hooks with
+    # __attribute__((weak_import)), which static ld64 kernel linking still requires to
+    # resolve when the corresponding optional patches/drivers are not linked.
+    optional_zero_stubs = [
+        '_ml_static_mfree_prepare',
+        '_native_ufs_store_mode',
+        '_native_ufs_store_open',
+        '_native_ufs_store_read',
+        '_native_ufs_store_write',
+        '_native_ufs_store_write_cached',
+        '_native_ufs_store_sync',
+        '_native_ufs_store_gpt_check',
+    ]
+    all_undef = {name for name, _, kind in ram_symbols if kind == 1}
+    emit_stubs = [sym for sym in optional_zero_stubs if sym in all_undef]
+
+    asm_lines = [f'.globl {name}\n.set {name}, {possible[name]:#x}\n' for name in undefined]
+    if emit_stubs:
+        asm_lines.append('\n.text\n.p2align 2\n')
+        for sym in emit_stubs:
+            asm_lines.append(f'.globl {sym}\n{sym}:\n  mov w0, #0\n  ret\n')
+
     asm_path = out / 'original-bindings.S'
-    asm_path.write_text(''.join(f'.globl {name}\n.set {name}, {possible[name]:#x}\n' for name in undefined))
+    asm_path.write_text(''.join(asm_lines))
     bindings_obj = out / 'original-bindings.o'
     subprocess.run(
         ['xcrun', 'clang', '-target', TRIPLE, '-Werror', '-Wno-incompatible-sysroot',
@@ -146,7 +168,7 @@ def main():
     archive = out / 'libRamBlock.a'
     archive.unlink(missing_ok=True)
     subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(ram_obj), str(bindings_obj)], check=True)
-    print(f'PASS: bound {len(undefined)} IOBlockStorageDevice symbols into {archive.name}: {undefined}')
+    print(f'PASS: bound {len(undefined)} IOBlockStorageDevice symbols + {len(emit_stubs)} optional stubs into {archive.name}')
 
 
 if __name__ == '__main__':
