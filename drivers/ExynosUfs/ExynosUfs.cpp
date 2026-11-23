@@ -8,6 +8,7 @@
 // (verified against uefi-a51 Silicon/Samsung/SamsungPkg/Drivers/UfsDxe).
 
 #include <IOKit/IOLib.h>
+#include <IOKit/IOBSD.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -17,8 +18,12 @@
 #include <libkern/OSByteOrder.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSDictionary.h>
+#include <libkern/c++/OSIterator.h>
+#include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSString.h>
+#include <libkern/crypto/sha2.h>
 #include <pexpert/pexpert.h>
+#include <sys/param.h>
 
 namespace {
 
@@ -187,15 +192,19 @@ class ExynosUfsWindow : public IOBlockStorageDevice {
   OSDeclareDefaultStructors(ExynosUfsWindow)
 
 private:
-  ExynosUfs *parent_   = nullptr;
-  uint64_t   baseByte_ = 0;
-  uint64_t   sizeByte_ = 0;
-  uint32_t   blkSize_  = 512;
-  char       name_[32] = {};
+  ExynosUfs *parent_    = nullptr;
+  uint64_t   baseByte_  = 0;
+  uint64_t   sizeByte_  = 0;
+  uint32_t   blkSize_   = 512;
+  char       name_[32]  = {};
+  uint8_t    sha256_[32] = {};
 
 public:
   bool initWindow(ExynosUfs *parent, const char *name,
-                  uint64_t baseByte, uint64_t sizeByte, uint32_t blkSize);
+                  uint64_t baseByte, uint64_t sizeByte, uint32_t blkSize,
+                  const uint8_t sha256[32]);
+  const char    *windowName() const { return name_; }
+  const uint8_t *windowSha256() const { return sha256_; }
   bool start(IOService *provider) override;
 
   IOReturn doEjectMedia() override { return kIOReturnUnsupported; }
@@ -250,7 +259,7 @@ OSDefineMetaClassAndStructors(ExynosUfsWindow, IOBlockStorageDevice)
 
 bool ExynosUfsWindow::initWindow(ExynosUfs *parent, const char *name,
                                  uint64_t baseByte, uint64_t sizeByte,
-                                 uint32_t blkSize) {
+                                 uint32_t blkSize, const uint8_t sha256[32]) {
   if (!IOBlockStorageDevice::init(nullptr)) {
     return false;
   }
@@ -259,6 +268,9 @@ bool ExynosUfsWindow::initWindow(ExynosUfs *parent, const char *name,
   sizeByte_ = sizeByte;
   blkSize_  = blkSize ? blkSize : 512u;
   strlcpy(name_, name ? name : "Window", sizeof(name_));
+  if (sha256) {
+    memcpy(sha256_, sha256, sizeof(sha256_));
+  }
   return true;
 }
 
@@ -685,13 +697,24 @@ void ExynosUfs::parseShngroot() {
     return;
   }
 
+  uint8_t hdrHash[32] = {};
+  SHA256_CTX hctx;
+  SHA256_Init(&hctx);
+  SHA256_Update(&hctx, hdr, 4064);
+  SHA256_Final(hdrHash, &hctx);
+  if (memcmp(hdrHash, hdr + 4064, 32) != 0) {
+    kprintf("ExynosUfs: SHNGROOT header SHA-256 mismatch!\n");
+    IOFree(hdr, 4096);
+    return;
+  }
+
   uint32_t version = OSReadLittleInt32(hdr, 8);
   uint32_t count   = OSReadLittleInt32(hdr, 12);
   if (count > 16u) {
     count = 16u;
   }
-  kprintf("ExynosUfs: SHNGROOT v%u found (%u entries)\n", version, count);
-  IOLog("ExynosUfs: SHNGROOT v%u found (%u entries)\n", version, count);
+  kprintf("ExynosUfs: SHNGROOT v%u verified (%u entries)\n", version, count);
+  IOLog("ExynosUfs: SHNGROOT v%u verified (%u entries)\n", version, count);
 
   uint64_t udBaseByte = kUserdataFirstLba * blockSize_;
   for (uint32_t i = 0; i < count; ++i) {
@@ -702,6 +725,7 @@ void ExynosUfs::parseShngroot() {
     uint64_t wsize = OSReadLittleInt64(e, 40);
     uint32_t wblk  = OSReadLittleInt32(e, 48);
     uint32_t wflg  = OSReadLittleInt32(e, 52);
+    const uint8_t *wsha = e + 56;
     if (wflg != 1u || wsize == 0) {
       continue;
     }
@@ -712,7 +736,7 @@ void ExynosUfs::parseShngroot() {
           wname, static_cast<unsigned long long>(woff),
           static_cast<unsigned long long>(wsize), wblk);
     ExynosUfsWindow *win = OSTypeAlloc(ExynosUfsWindow);
-    if (win && win->initWindow(this, wname, udBaseByte + woff, wsize, wblk)) {
+    if (win && win->initWindow(this, wname, udBaseByte + woff, wsize, wblk, wsha)) {
       if (win->attach(this)) {
         if (win->start(this)) {
           win->registerService();
@@ -726,6 +750,159 @@ void ExynosUfs::parseShngroot() {
     }
   }
   IOFree(hdr, 4096);
+}
+
+static ExynosUfsWindow *exynosUfsFindWindowForDev(dev_t device) {
+  if (device == NODEV) {
+    return nullptr;
+  }
+  uint32_t wantMaj = static_cast<uint32_t>(major(device));
+  uint32_t wantMin = static_cast<uint32_t>(minor(device));
+  OSDictionary *matching = IOService::serviceMatching("IOMedia");
+  if (!matching) {
+    return nullptr;
+  }
+  OSIterator *it = IOService::getMatchingServices(matching);
+  matching->release();
+  if (!it) {
+    return nullptr;
+  }
+  ExynosUfsWindow *found = nullptr;
+  while (OSObject *obj = it->getNextObject()) {
+    IOService *media = OSDynamicCast(IOService, obj);
+    if (!media) {
+      continue;
+    }
+    OSNumber *mjr = OSDynamicCast(OSNumber, media->getProperty(kIOBSDMajorKey));
+    OSNumber *mnr = OSDynamicCast(OSNumber, media->getProperty(kIOBSDMinorKey));
+    if (!mjr || !mnr ||
+        mjr->unsigned32BitValue() != wantMaj ||
+        mnr->unsigned32BitValue() != wantMin) {
+      continue;
+    }
+    unsigned depth = 0;
+    for (IOService *prov = media; prov && depth++ < 64; prov = prov->getProvider()) {
+      ExynosUfsWindow *win = OSDynamicCast(ExynosUfsWindow, prov);
+      if (win) {
+        win->retain();
+        found = win;
+        break;
+      }
+    }
+    if (found) {
+      break;
+    }
+  }
+  it->release();
+  return found;
+}
+
+extern "C" int native_verified_block_root_authorized(dev_t device) {
+  ExynosUfsWindow *win = exynosUfsFindWindowForDev(device);
+  if (!win) {
+    kprintf("ExynosUfs: root_authorized(dev=0x%x) -> 0\n", static_cast<unsigned>(device));
+    return 0;
+  }
+  kprintf("ExynosUfs: root_authorized(dev=0x%x) -> 1 ('%s')\n",
+          static_cast<unsigned>(device), win->windowName());
+  win->release();
+  return 1;
+}
+
+extern "C" int native_verified_block_volume_device(const char *uuid, dev_t *device,
+                                                   char *path, size_t size) {
+  if (!uuid || strlen(uuid) != 36 || !device || !path || size < 6) {
+    return 0;
+  }
+  *device = NODEV;
+  path[0] = 0;
+
+  for (unsigned attempt = 0; attempt < 100; ++attempt) {
+    OSDictionary *matching   = IOService::serviceMatching("IOMedia");
+    OSDictionary *properties = OSDictionary::withCapacity(1);
+    OSString     *wanted     = OSString::withCString(uuid);
+    if (!matching || !properties || !wanted) {
+      OSSafeReleaseNULL(wanted);
+      OSSafeReleaseNULL(properties);
+      OSSafeReleaseNULL(matching);
+      return 0;
+    }
+    bool ready = properties->setObject("UUID", wanted) &&
+                 matching->setObject("IOPropertyMatch", properties);
+    wanted->release();
+    properties->release();
+    OSIterator *it = ready ? IOService::getMatchingServices(matching) : nullptr;
+    matching->release();
+    if (!it) {
+      return 0;
+    }
+    bool selected = false;
+    unsigned matches = 0;
+    dev_t candidate = NODEV;
+    char candidatePath[64] = {};
+    while (OSObject *obj = it->getNextObject()) {
+      IOService *media = OSDynamicCast(IOService, obj);
+      if (!media) {
+        continue;
+      }
+      if (++matches != 1) {
+        selected = false;
+        break;
+      }
+      OSString *identity = OSDynamicCast(OSString, media->getProperty("UUID"));
+      OSString *name     = OSDynamicCast(OSString, media->getProperty(kIOBSDNameKey));
+      OSNumber *mjr      = OSDynamicCast(OSNumber, media->getProperty(kIOBSDMajorKey));
+      OSNumber *mnr      = OSDynamicCast(OSNumber, media->getProperty(kIOBSDMinorKey));
+      if (!identity || strcmp(identity->getCStringNoCopy(), uuid) != 0 ||
+          !name || !mjr || !mnr || !name->getLength() ||
+          name->getLength() >= sizeof(candidatePath) - 6 ||
+          name->getLength() >= size - 6 ||
+          mjr->unsigned64BitValue() > 255 || mnr->unsigned64BitValue() > 0xffffff) {
+        continue;
+      }
+      unsigned depth = 0;
+      for (IOService *prov = media; prov && depth++ < 64; prov = prov->getProvider()) {
+        if (OSDynamicCast(ExynosUfsWindow, prov) != nullptr) {
+          candidate = static_cast<dev_t>(makedev(mjr->unsigned32BitValue(), mnr->unsigned32BitValue()));
+          snprintf(candidatePath, sizeof(candidatePath), "/dev/%s", name->getCStringNoCopy());
+          selected = true;
+          break;
+        }
+      }
+    }
+    it->release();
+    if (selected && matches == 1) {
+      *device = candidate;
+      strlcpy(path, candidatePath, size);
+      kprintf("ExynosUfs: volume_device(%s) -> %s (dev=0x%x)\n",
+              uuid, path, static_cast<unsigned>(candidate));
+      return 1;
+    }
+    IOSleep(50);
+  }
+  kprintf("ExynosUfs: volume_device(%s) -> NOT FOUND\n", uuid);
+  return 0;
+}
+
+extern "C" int native_verified_block_manifest_sha384(dev_t device, const char *uuid,
+                                                     uint8_t digest[48]) {
+  if (!uuid || !digest) {
+    return 0;
+  }
+  ExynosUfsWindow *win = exynosUfsFindWindowForDev(device);
+  if (!win) {
+    return 0;
+  }
+  static const char domain[] = "ExynosUfs.SHNGROOT.v1";
+  SHA384_CTX ctx;
+  SHA384_Init(&ctx);
+  SHA384_Update(&ctx, domain, sizeof(domain));
+  SHA384_Update(&ctx, win->windowName(), strlen(win->windowName()) + 1);
+  SHA384_Update(&ctx, win->windowSha256(), 32);
+  SHA384_Update(&ctx, uuid, strlen(uuid));
+  SHA384_Final(digest, &ctx);
+  win->release();
+  return 1;
 }
 
 extern "C" void exynos_ufs_try_attach(void *fallbackProvider) {

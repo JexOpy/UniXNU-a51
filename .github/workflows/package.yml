@@ -91,7 +91,8 @@ jobs:
           path: |
             UniXNU/cache
             UniXNU/downloads
-          key: unixnu-cache-${{ inputs.os }}-v1
+            UniXNU/out/ipsw
+          key: unixnu-cache-${{ inputs.os }}-v2
           restore-keys: |
             unixnu-cache-${{ inputs.os }}-
 
@@ -119,9 +120,24 @@ jobs:
           assert needle in s, "NativeRamBlock::start anchor missing"
           s = s.replace(needle, "exynos_ufs_try_attach(provider);\n  " + needle, 1)
           p.write_text(s)
+
+          b = Path("../UniXNU/scripts/build-xnu-4k-baseline.sh")
+          bs = b.read_text()
+          g1 = "if [ \"$OWNER_ROOT_AUDIT\" = 1 ] && [ \"$OWNER_ROOT_PROBE\" != 1 ] && [ \"${XNU_SOURCE_STORAGE:-0}\" != 1 ]; then"
+          g2 = "{ [ \"${XNU_NATIVE_VIRTIO_BLOCK:-0}\" != 1 ] && [ \"${XNU_SOURCE_STORAGE:-0}\" != 1 ]; }; }; then"
+          assert g1 in bs and g2 in bs, "build-xnu-4k-baseline.sh owner-root guard changed"
+          bs = bs.replace(g1, "if [ \"$OWNER_ROOT_AUDIT\" = 1 ] && [ \"$OWNER_ROOT_PROBE\" != 1 ] && [ \"${XNU_SOURCE_STORAGE:-0}\" != 1 ] && [ \"$NATIVE_RAM_BLOCK\" != 1 ]; then", 1)
+          bs = bs.replace(g2, "{ [ \"${XNU_NATIVE_VIRTIO_BLOCK:-0}\" != 1 ] && [ \"${XNU_SOURCE_STORAGE:-0}\" != 1 ] && [ \"$NATIVE_RAM_BLOCK\" != 1 ]; }; }; then", 1)
+          b.write_text(bs)
           '
+          python3 scripts/prepare-a51-runtime.py \
+            --unixnu ../UniXNU --device "$PWD" --output ../UniXNU/out/a51/runtime --data-mib 128
+          TRUST_BUNDLE="$(python3 -c 'import json; print(json.load(open("../UniXNU/out/a51/runtime/runtime.json"))["trust_cache"])')"
+          DATA_DBR="$(python3 -c 'import json; print(json.load(open("../UniXNU/out/a51/runtime/runtime.json"))["data_ramdisk"])')"
           UNIXNU_DTB="$PWD/../UniXNU/out/a51/ipados-17.7.11-21H461/a51/device-tree/hardware.dtb" \
-            UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh --os "${{ inputs.os }}" --uefi "$UEFI_ABS"
+            UNIXNU_UEFI="$UEFI_ABS" scripts/package.sh \
+            --os "${{ inputs.os }}" --uefi "$UEFI_ABS" \
+            --owner-trust-cache "$TRUST_BUNDLE" --data-ramdisk "$DATA_DBR"
 
       - name: Pack Odin tar
         working-directory: device

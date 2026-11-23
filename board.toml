@@ -137,6 +137,7 @@ kernel_args = [
   "fips_mode=4",
   "armcpu-diagnostics=1",
   "-no_slto_panic",
+  "no-lc=1",
 ]
 
 [payload.adt]
