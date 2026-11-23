@@ -52,6 +52,7 @@ archives = [
   "component:SoftwareAES",
   "component:RamBlock",
   "build-software-aes-bindings.py",
+  "bind-ram-block-storage.py",
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
 ]
@@ -131,7 +132,7 @@ timeout = 10
 panic_screen = true
 kernel_args = [
   "-v",
-  "debug=0x14f",
+  "debug=0x14e",
   "kt_fixed_zones=120",
   "fips_mode=4",
   "armcpu-diagnostics=1",
@@ -141,11 +142,15 @@ kernel_args = [
 [payload.adt]
 chip_id = "207"
 unique_chip_id = "required"
-# 256 MiB contiguous window inside the measured clean low-RAM span 0x92000000-0xBAA00000 (650 MiB),
+# 512 MiB contiguous window inside the measured clean low-RAM span 0x92000000-0xBAA00000 (650 MiB),
 # avoiding UEFI fragmentation and TZASC holes below 0xBAB00000.
-owned_memory_size = "0x10000000"
+owned_memory_size = "0x20000000"
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 packed_data_ramdisk = true
+
+[adt.defaults.u32]
+# Exynos 9611 has no Apple PMGR; declaring vmm-present satisfies AMFI ConfigurationSettings.
+vmm-present = 1
 
 [userdata]
 # Measured on physical SM-A515F (128 GB UFS 2.0 /dev/block/sda, 4096 B logical blocks, sda32 userdata):

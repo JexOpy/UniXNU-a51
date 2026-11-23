@@ -1,89 +1,130 @@
 // SPDX-License-Identifier: BSD-2-Clause
-// Exynos 9611 (S5E9611) UFSHCI 2.1 IOBlockStorageDevice driver for UniXNU.
-// Assumes uefi-a51 (PlatformUfsLib / UfsPassThruDxe) has already powered on
-// the UFS PHY and established the UniPro link (HCE=1, HCS.DP=1, HCS.UCRDY=1).
+// Exynos 9611 (S5E9611) UFSHCI 2.1 controller and SHNGROOT window driver for UniXNU.
+//
+// Assumes uefi-a51 (UfsDxe / PlatformUfsLib) has powered on the UFS PHY, established
+// the UniPro link in HS Gear mode, completed fDeviceInit, and left HCE=1, HCS.DP=1,
+// HCS.UTRLRDY=1. Register layout, UTRD byte units, 1024-byte aligned UPIUs, and
+// 4 KiB PRDT scatter-gather segments match Samsung's S5E9610/9611 UFSHCI hardware
+// (verified against uefi-a51 Silicon/Samsung/SamsungPkg/Drivers/UfsDxe).
 
 #include <IOKit/IOLib.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOMemoryDescriptor.h>
-#include <IOKit/IOPlatformExpert.h>
+#include <IOKit/IOService.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
+#include <IOKit/storage/IOStorageDeviceCharacteristics.h>
 #include <libkern/OSByteOrder.h>
+#include <libkern/c++/OSData.h>
+#include <libkern/c++/OSDictionary.h>
+#include <libkern/c++/OSString.h>
+#include <pexpert/pexpert.h>
 
 namespace {
 
-// Standard JEDEC UFSHCI 2.1 registers (base 0x13520000)
-constexpr uint32_t REG_CAP      = 0x00;
-constexpr uint32_t REG_VER      = 0x08;
-constexpr uint32_t REG_IS       = 0x20;
-constexpr uint32_t REG_IE       = 0x24;
-constexpr uint32_t REG_HCS      = 0x30;
-constexpr uint32_t REG_HCE      = 0x34;
-constexpr uint32_t REG_UTRLBA   = 0x50;
-constexpr uint32_t REG_UTRLBAU  = 0x54;
-constexpr uint32_t REG_UTRLDBR  = 0x58;
-constexpr uint32_t REG_UTRLCLR  = 0x5C;
-constexpr uint32_t REG_UTRLRSR  = 0x60;
+// Standard JEDEC UFSHCI registers (physical base 0x13520000 on Exynos 9611)
+constexpr uint32_t kRegCap     = 0x00;
+constexpr uint32_t kRegVer     = 0x08;
+constexpr uint32_t kRegIs      = 0x20;
+constexpr uint32_t kRegIe      = 0x24;
+constexpr uint32_t kRegHcs     = 0x30;
+constexpr uint32_t kRegHce     = 0x34;
+constexpr uint32_t kRegUtrlba  = 0x50;
+constexpr uint32_t kRegUtrlbau = 0x54;
+constexpr uint32_t kRegUtrldbr = 0x58;
+constexpr uint32_t kRegUtrlclr = 0x5C;
+constexpr uint32_t kRegUtrlrsr = 0x60;
 
-// Exynos vendor-specific HCI registers (base 0x13521100)
-constexpr uint32_t VS_TXPRDT_ENTRY_SIZE = 0x00;
-constexpr uint32_t VS_RXPRDT_ENTRY_SIZE = 0x04;
-constexpr uint32_t VS_UTRL_NEXUS_TYPE   = 0x40;
+// Exynos 9611 vendor-specific HCI registers (physical base 0x13521100)
+constexpr uint32_t kVsTxPrdtEntrySize = 0x00; // bit shift: 12 => 4096 B
+constexpr uint32_t kVsRxPrdtEntrySize = 0x04; // bit shift: 12 => 4096 B
+constexpr uint32_t kVsUtrlNexusType   = 0x40;
+constexpr uint32_t kVsDataReorder     = 0x60;
 
-constexpr uint32_t HCS_DP    = (1u << 0);
-constexpr uint32_t HCS_UCRDY = (1u << 1);
+constexpr uint32_t kHcsDp      = (1u << 0);
+constexpr uint32_t kHcsUtrlrdy = (1u << 1);
 
-constexpr uint32_t kUfsBlockSize   = 4096;
-constexpr uint32_t kBounceBytes    = 64 * 1024; // 16 blocks per transfer
-constexpr uint32_t kMaxPrdtEntries = 16;
+constexpr uint32_t kIsUtrcs          = (1u << 0);
+constexpr uint32_t kIsUicLinkLost    = (1u << 7);
+constexpr uint32_t kIsDevFatalErr    = (1u << 11);
+constexpr uint32_t kIsCtrlFatalErr   = (1u << 16);
+constexpr uint32_t kIsSysBusFatalErr = (1u << 17);
+constexpr uint32_t kIsFatalMask =
+    kIsUicLinkLost | kIsDevFatalErr | kIsCtrlFatalErr | kIsSysBusFatalErr;
 
-struct __attribute__((packed)) Utrd {
-  uint32_t dw0;      // [28:25]=DD, [31:28]=CT (1=UFS storage)
-  uint32_t dw1;
-  uint32_t ocs;      // Overall Command Status (0x0 = success, 0xF = invalid)
-  uint32_t dw3;
-  uint32_t ucdba;    // UCD base address low (128B aligned)
-  uint32_t ucdbau;   // UCD base address high
-  uint16_t resp_len; // Response UPIU length in dwords
-  uint16_t resp_off; // Response UPIU offset in dwords
-  uint16_t prdt_len; // Number of PRDT entries
-  uint16_t prdt_off; // PRDT offset in dwords
+// Exynos 9611 UTRD DW0 flags (matching UfsDxe.h)
+constexpr uint32_t kUtpNoData         = 0x00000000u;
+constexpr uint32_t kUtpHostToDevice   = 0x02000000u;
+constexpr uint32_t kUtpDeviceToHost   = 0x04000000u;
+constexpr uint32_t kUtpScsiCommand    = 0x00000000u;
+constexpr uint32_t kUtpReqDescIntCmd  = 0x01000000u;
+
+constexpr uint32_t kSgBlockSizeBit  = 12u;
+constexpr uint32_t kSgBlockSize     = (1u << kSgBlockSizeBit); // 4096 B
+constexpr uint32_t kAlignedUpiuSize = 1024u;
+constexpr uint32_t kMaxSgSegments   = 128u;
+constexpr uint32_t kBounceBytes     = 64u * 1024u; // 16 x 4 KiB segments
+
+struct __attribute__((packed)) ExynosUfsUpiuHeader {
+  uint8_t  type;
+  uint8_t  flags;
+  uint8_t  lun;
+  uint8_t  tag;
+  uint8_t  cmd_type;
+  uint8_t  function;
+  uint8_t  response;
+  uint8_t  status;
+  uint8_t  ehs_length;
+  uint8_t  device_info;
+  uint16_t data_length;
 };
+static_assert(sizeof(ExynosUfsUpiuHeader) == 12, "UPIU header must be 12 bytes");
 
-struct __attribute__((packed)) PrdtEntry {
-  uint32_t base_lo;
-  uint32_t base_hi;
+struct __attribute__((packed)) ExynosUfsUpiu {
+  ExynosUfsUpiuHeader header;
+  uint8_t             tsf[20];
+  uint8_t             data[kAlignedUpiuSize - 20 - sizeof(ExynosUfsUpiuHeader)];
+};
+static_assert(sizeof(ExynosUfsUpiu) == 1024, "Aligned UPIU must be 1024 bytes");
+
+struct __attribute__((packed)) ExynosUfsPrdt {
+  uint32_t base_addr;
+  uint32_t upper_addr;
   uint32_t reserved;
   uint32_t size; // byte count - 1
 };
+static_assert(sizeof(ExynosUfsPrdt) == 16, "PRDT entry must be 16 bytes");
 
-struct __attribute__((packed)) CommandUpiu {
-  uint8_t  txn_type; // 0x01
-  uint8_t  flags;    // bit 6 = R, bit 5 = W
-  uint8_t  lun;
-  uint8_t  task_tag;
-  uint8_t  iid_cmdset;
-  uint8_t  reserved0[3];
-  uint8_t  ehs_len;
-  uint8_t  reserved1;
-  uint16_t data_seg_len;
-  uint32_t expected_xfer_len_be;
-  uint8_t  cdb[16];
+struct __attribute__((packed)) ExynosUfsCmdDesc {
+  ExynosUfsUpiu command_upiu;               // +0x000 (1024 B)
+  ExynosUfsUpiu response_upiu;              // +0x400 (1024 B)
+  ExynosUfsPrdt prd_table[kMaxSgSegments];  // +0x800 (2048 B)
 };
+static_assert(sizeof(ExynosUfsCmdDesc) == 4096, "CmdDesc must be 4096 bytes");
 
-struct __attribute__((packed)) Ucd {
-  CommandUpiu cmd;
-  uint8_t     cmd_pad[128 - sizeof(CommandUpiu)];
-  uint8_t     resp[128];
-  PrdtEntry   prdt[kMaxPrdtEntries];
+struct __attribute__((packed)) ExynosUfsUtrd {
+  uint32_t dw[4];
+  uint32_t cmd_desc_addr_l;
+  uint32_t cmd_desc_addr_h;
+  uint16_t rsp_upiu_len; // Exynos takes bytes (1024)
+  uint16_t rsp_upiu_off; // Exynos takes bytes (1024)
+  uint16_t prdt_len;     // Exynos takes bytes (sg_segs * 16)
+  uint16_t prdt_off;     // Exynos takes bytes (2048)
 };
+static_assert(sizeof(ExynosUfsUtrd) == 32, "UTRD must be 32 bytes");
 
-static_assert(sizeof(Utrd) == 32, "UTRD must be 32 bytes");
-static_assert(sizeof(PrdtEntry) == 16, "PRDT entry must be 16 bytes");
+static inline void exynosUfsFlushCache(const void *va, size_t len) {
+  uintptr_t start = reinterpret_cast<uintptr_t>(va) & ~static_cast<uintptr_t>(63u);
+  uintptr_t end   = reinterpret_cast<uintptr_t>(va) + len;
+  for (uintptr_t p = start; p < end; p += 64u) {
+    __asm__ volatile("dc civac, %0" :: "r"(p) : "memory");
+  }
+  __asm__ volatile("dsb sy" ::: "memory");
+}
 
 } // namespace
 
-class ExynosUfs : public IOBlockStorageDevice {
+class ExynosUfs : public IOService {
   OSDeclareDefaultStructors(ExynosUfs)
 
 private:
@@ -96,77 +137,50 @@ private:
   IOBufferMemoryDescriptor *bounceBuf_ = nullptr;
   IOLock *ioLock_ = nullptr;
 
-  Utrd *utrd_ = nullptr;
-  Ucd  *ucd_  = nullptr;
-  uint64_t utrdPhys_   = 0;
-  uint64_t ucdPhys_    = 0;
-  uint64_t bouncePhys_ = 0;
-  uint8_t *bounceVirt_ = nullptr;
+  ExynosUfsUtrd    *utrd_       = nullptr;
+  ExynosUfsCmdDesc *ucd_        = nullptr;
+  uint64_t          utrdPhys_   = 0;
+  uint64_t          ucdPhys_    = 0;
+  uint64_t          bouncePhys_ = 0;
+  uint8_t          *bounceVirt_ = nullptr;
 
   uint64_t blockCount_ = 0;
-  uint32_t blockSize_  = kUfsBlockSize;
+  uint32_t blockSize_  = 4096;
 
   inline uint32_t readHci(uint32_t off) const {
-    return hci_[off >> 2];
+    uint32_t val;
+    __asm__ volatile("ldr %w0, [%1]"
+                     : "=r"(val)
+                     : "r"(reinterpret_cast<uintptr_t>(hci_) + off)
+                     : "memory");
+    return val;
   }
   inline void writeHci(uint32_t off, uint32_t val) {
-    hci_[off >> 2] = val;
-    __builtin_arm_dsb(0xf);
+    __asm__ volatile("str %w0, [%1]"
+                     :: "r"(val), "r"(reinterpret_cast<uintptr_t>(hci_) + off)
+                     : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
   }
   inline void writeVs(uint32_t off, uint32_t val) {
-    vsHci_[off >> 2] = val;
-    __builtin_arm_dsb(0xf);
+    __asm__ volatile("str %w0, [%1]"
+                     :: "r"(val), "r"(reinterpret_cast<uintptr_t>(vsHci_) + off)
+                     : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
   }
 
+  bool mapRegisters();
   IOReturn submitScsi(uint8_t lun, const uint8_t cdb[16],
                       bool isWrite, uint32_t xferBytes);
-  bool readCapacity16(uint8_t lun);
+  void requestSense(uint8_t lun);
+  bool readCapacity(uint8_t lun);
+  void parseShngroot();
 
 public:
   bool start(IOService *provider) override;
   void stop(IOService *provider) override;
 
-  IOReturn doEjectMedia() override { return kIOReturnUnsupported; }
-  IOReturn doFormatMedia(UInt64) override { return kIOReturnUnsupported; }
-  UInt32   doGetFormatCapacities(UInt64 *, UInt32) const override { return 0; }
-  IOReturn doLockUnlockMedia(bool) { return kIOReturnSuccess; }
-  IOReturn doSynchronizeCache() override { return kIOReturnSuccess; }
-  char    *getVendorString() override { return const_cast<char *>("Samsung"); }
-  char    *getProductString() override { return const_cast<char *>("Exynos9611-UFS"); }
-  char    *getRevisionString() override { return const_cast<char *>("2.0"); }
-  char    *getAdditionalDeviceInfoString() override { return const_cast<char *>("UFSHCI"); }
-  IOReturn reportBlockSize(UInt64 *blockSize) override {
-    *blockSize = blockSize_;
-    return kIOReturnSuccess;
-  }
-  IOReturn reportEjectability(bool *isEjectable) override {
-    *isEjectable = false;
-    return kIOReturnSuccess;
-  }
-  IOReturn reportMaxValidBlock(UInt64 *maxBlock) override {
-    *maxBlock = blockCount_ > 0 ? (blockCount_ - 1) : 0;
-    return kIOReturnSuccess;
-  }
-  IOReturn reportMediaState(bool *mediaPresent, bool *changedState) override {
-    *mediaPresent = (blockCount_ > 0);
-    *changedState = false;
-    return kIOReturnSuccess;
-  }
-  IOReturn reportRemovability(bool *isRemovable) override {
-    *isRemovable = false;
-    return kIOReturnSuccess;
-  }
-  IOReturn reportWriteProtection(bool *isWriteProtected) override {
-    *isWriteProtected = false;
-    return kIOReturnSuccess;
-  }
-  IOReturn doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block,
-                            UInt64 nblks, IOStorageAttributes *attributes,
-                            IOStorageCompletion *completion) override;
-
   IOReturn readWindowBytes(uint64_t byteOffset, uint64_t byteLen,
                            IOMemoryDescriptor *dst);
-  void parseShngroot();
 };
 
 class ExynosUfsWindow : public IOBlockStorageDevice {
@@ -182,15 +196,15 @@ private:
 public:
   bool initWindow(ExynosUfs *parent, const char *name,
                   uint64_t baseByte, uint64_t sizeByte, uint32_t blkSize);
+  bool start(IOService *provider) override;
+
   IOReturn doEjectMedia() override { return kIOReturnUnsupported; }
   IOReturn doFormatMedia(UInt64) override { return kIOReturnUnsupported; }
   UInt32   doGetFormatCapacities(UInt64 *, UInt32) const override { return 0; }
-  IOReturn doLockUnlockMedia(bool) { return kIOReturnSuccess; }
-  IOReturn doSynchronizeCache() override { return kIOReturnSuccess; }
-  char    *getVendorString() override { return const_cast<char *>("UniXNU"); }
+  char    *getVendorString() override { return const_cast<char *>("Samsung"); }
   char    *getProductString() override { return name_; }
   char    *getRevisionString() override { return const_cast<char *>("1.0"); }
-  char    *getAdditionalDeviceInfoString() override { return const_cast<char *>("SHNGROOT"); }
+  char    *getAdditionalDeviceInfoString() override { return const_cast<char *>("Exynos9611-SHNGROOT"); }
   IOReturn reportBlockSize(UInt64 *blockSize) override {
     *blockSize = blkSize_;
     return kIOReturnSuccess;
@@ -206,7 +220,9 @@ public:
   }
   IOReturn reportMediaState(bool *mediaPresent, bool *changedState) override {
     *mediaPresent = (sizeByte_ > 0);
-    *changedState = false;
+    if (changedState) {
+      *changedState = false;
+    }
     return kIOReturnSuccess;
   }
   IOReturn reportRemovability(bool *isRemovable) override {
@@ -217,12 +233,19 @@ public:
     *isWriteProtected = true;
     return kIOReturnSuccess;
   }
+  IOReturn doSynchronizeCache() override { return kIOReturnSuccess; }
+  IOReturn doSynchronize(UInt64, UInt64, IOOptionBits) override { return kIOReturnSuccess; }
+  IOReturn getWriteCacheState(bool *value) override {
+    *value = false;
+    return kIOReturnSuccess;
+  }
+  IOReturn setWriteCacheState(bool) override { return kIOReturnUnsupported; }
   IOReturn doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block,
                             UInt64 nblks, IOStorageAttributes *attributes,
                             IOStorageCompletion *completion) override;
 };
 
-OSDefineMetaClassAndStructors(ExynosUfs, IOBlockStorageDevice)
+OSDefineMetaClassAndStructors(ExynosUfs, IOService)
 OSDefineMetaClassAndStructors(ExynosUfsWindow, IOBlockStorageDevice)
 
 bool ExynosUfsWindow::initWindow(ExynosUfs *parent, const char *name,
@@ -234,8 +257,22 @@ bool ExynosUfsWindow::initWindow(ExynosUfs *parent, const char *name,
   parent_   = parent;
   baseByte_ = baseByte;
   sizeByte_ = sizeByte;
-  blkSize_  = blkSize ? blkSize : 512;
+  blkSize_  = blkSize ? blkSize : 512u;
   strlcpy(name_, name ? name : "Window", sizeof(name_));
+  return true;
+}
+
+bool ExynosUfsWindow::start(IOService *provider) {
+  if (!IOBlockStorageDevice::start(provider)) {
+    return false;
+  }
+  OSDictionary *characteristics = OSDictionary::withCapacity(1);
+  OSString *medium = OSString::withCString(kIOPropertyMediumTypeSolidStateKey);
+  if (characteristics && medium && characteristics->setObject(kIOPropertyMediumTypeKey, medium)) {
+    setProperty(kIOPropertyDeviceCharacteristicsKey, characteristics);
+  }
+  OSSafeReleaseNULL(medium);
+  OSSafeReleaseNULL(characteristics);
   return true;
 }
 
@@ -243,40 +280,104 @@ IOReturn ExynosUfsWindow::doAsyncReadWrite(IOMemoryDescriptor *buffer,
                                            UInt64 block, UInt64 nblks,
                                            IOStorageAttributes *,
                                            IOStorageCompletion *completion) {
+  if (!buffer || !completion || !completion->action || !nblks) {
+    return kIOReturnBadArgument;
+  }
   if (buffer->getDirection() == kIODirectionOut) {
-    IOStorage::complete(completion, kIOReturnNotWritable, 0);
+    completion->action(completion->target, completion->parameter, kIOReturnNotWritable, 0);
+    return kIOReturnSuccess;
+  }
+  uint64_t totalBlks = sizeByte_ / blkSize_;
+  if (block >= totalBlks || nblks > totalBlks - block) {
+    completion->action(completion->target, completion->parameter, kIOReturnBadArgument, 0);
     return kIOReturnSuccess;
   }
   uint64_t byteOff = block * blkSize_;
   uint64_t byteLen = nblks * blkSize_;
-  if (byteOff >= sizeByte_ || byteLen > sizeByte_ - byteOff) {
-    IOStorage::complete(completion, kIOReturnBadArgument, 0);
-    return kIOReturnSuccess;
+  if (buffer->getLength() < byteLen) {
+    return kIOReturnBadArgument;
   }
   IOReturn st = parent_->readWindowBytes(baseByte_ + byteOff, byteLen, buffer);
-  IOStorage::complete(completion, st, (st == kIOReturnSuccess) ? byteLen : 0);
+  completion->action(completion->target, completion->parameter, st,
+                     (st == kIOReturnSuccess) ? byteLen : 0);
   return kIOReturnSuccess;
 }
 
-bool ExynosUfs::start(IOService *provider) {
-  if (!IOBlockStorageDevice::start(provider)) {
+bool ExynosUfs::mapRegisters() {
+  IORegistryEntry *soc = IORegistryEntry::fromPath("/arm-io", gIODTPlane);
+  IORegistryEntry *ufs = IORegistryEntry::fromPath("/arm-io/ufs", gIODTPlane);
+  if (!soc || !ufs) {
+    if (soc) soc->release();
+    if (ufs) ufs->release();
+    kprintf("ExynosUfs: /arm-io or /arm-io/ufs missing from ADT\n");
     return false;
   }
-  hciMap_ = provider->mapDeviceMemoryWithIndex(0);
-  vsHciMap_ = provider->mapDeviceMemoryWithIndex(1);
-  if (!hciMap_ || !vsHciMap_) {
-    IOLog("ExynosUfs: failed to map HCI / VS_HCI MMIO\n");
+  OSData *ranges = OSDynamicCast(OSData, soc->getProperty("ranges"));
+  OSData *reg    = OSDynamicCast(OSData, ufs->getProperty("reg"));
+  uint64_t bus[3] = {};
+  uint64_t regions[4] = {};
+  bool valid = (ranges != nullptr) && (ranges->getLength() == sizeof(bus)) &&
+               (reg != nullptr) && (reg->getLength() >= sizeof(regions));
+  if (valid) {
+    memcpy(bus, ranges->getBytesNoCopy(), sizeof(bus));
+    memcpy(regions, reg->getBytesNoCopy(), sizeof(regions));
+  }
+  soc->release();
+  ufs->release();
+  if (!valid) {
+    kprintf("ExynosUfs: invalid /arm-io/ufs reg or ranges\n");
     return false;
   }
-  hci_ = reinterpret_cast<volatile uint32_t *>(hciMap_->getVirtualAddress());
-  vsHci_ = reinterpret_cast<volatile uint32_t *>(vsHciMap_->getVirtualAddress());
 
-  uint32_t hce = readHci(REG_HCE);
-  uint32_t hcs = readHci(REG_HCS);
-  IOLog("ExynosUfs: VER=0x%x CAP=0x%x HCE=0x%x HCS=0x%x\n",
-        readHci(REG_VER), readHci(REG_CAP), hce, hcs);
-  if ((hce & 1u) == 0 || (hcs & (HCS_DP | HCS_UCRDY)) != (HCS_DP | HCS_UCRDY)) {
-    IOLog("ExynosUfs: link not ready from UEFI (HCE=0x%x HCS=0x%x)\n", hce, hcs);
+  uint64_t hciPhys = bus[1] + regions[0] - bus[0];
+  uint64_t vsPhys  = bus[1] + regions[2] - bus[0];
+  uint64_t hciPage = hciPhys & ~0xFFFULL;
+  uint64_t vsPage  = vsPhys & ~0xFFFULL;
+  uint64_t hciOff  = hciPhys & 0xFFFULL;
+  uint64_t vsOff   = vsPhys & 0xFFFULL;
+
+  IOMemoryDescriptor *hciDesc = IOMemoryDescriptor::withPhysicalAddress(
+      static_cast<IOPhysicalAddress>(hciPage), 0x1000, kIODirectionInOut);
+  IOMemoryDescriptor *vsDesc = IOMemoryDescriptor::withPhysicalAddress(
+      static_cast<IOPhysicalAddress>(vsPage), 0x1000, kIODirectionInOut);
+  if (!hciDesc || !vsDesc) {
+    if (hciDesc) hciDesc->release();
+    if (vsDesc) vsDesc->release();
+    kprintf("ExynosUfs: failed to create MMIO descriptors\n");
+    return false;
+  }
+  hciMap_   = hciDesc->map(kIOMapAnywhere | kIOMapInhibitCache);
+  vsHciMap_ = vsDesc->map(kIOMapAnywhere | kIOMapInhibitCache);
+  hciDesc->release();
+  vsDesc->release();
+  if (!hciMap_ || !vsHciMap_) {
+    kprintf("ExynosUfs: failed to map HCI / VS_HCI MMIO\n");
+    return false;
+  }
+  hci_   = reinterpret_cast<volatile uint32_t *>(hciMap_->getVirtualAddress() + hciOff);
+  vsHci_ = reinterpret_cast<volatile uint32_t *>(vsHciMap_->getVirtualAddress() + vsOff);
+  kprintf("ExynosUfs: mapped hci=0x%llx vs=0x%llx\n",
+          static_cast<unsigned long long>(hciPhys),
+          static_cast<unsigned long long>(vsPhys));
+  return true;
+}
+
+bool ExynosUfs::start(IOService *provider) {
+  if (!IOService::start(provider)) {
+    return false;
+  }
+  if (!mapRegisters()) {
+    return false;
+  }
+
+  uint32_t ver = readHci(kRegVer);
+  uint32_t cap = readHci(kRegCap);
+  uint32_t hce = readHci(kRegHce);
+  uint32_t hcs = readHci(kRegHcs);
+  kprintf("ExynosUfs: VER=0x%x CAP=0x%x HCE=0x%x HCS=0x%x\n", ver, cap, hce, hcs);
+  IOLog("ExynosUfs: VER=0x%x CAP=0x%x HCE=0x%x HCS=0x%x\n", ver, cap, hce, hcs);
+  if ((hce & 1u) == 0 || (hcs & (kHcsDp | kHcsUtrlrdy)) != (kHcsDp | kHcsUtrlrdy)) {
+    kprintf("ExynosUfs: link not ready from UEFI (HCE=0x%x HCS=0x%x)\n", hce, hcs);
     return false;
   }
 
@@ -284,163 +385,231 @@ bool ExynosUfs::start(IOService *provider) {
       static_cast<IOOptionBits>(kIODirectionInOut) |
       static_cast<IOOptionBits>(kIOMemoryPhysicallyContiguous);
   ringBuf_ = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
-      kernel_task, dmaOpts,
-      8192, 0x00000000FFFFF000ULL);
+      kernel_task, dmaOpts, 8192, 0x00000000FFFFF000ULL);
   bounceBuf_ = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
-      kernel_task, dmaOpts,
-      kBounceBytes, 0x00000000FFFFF000ULL);
+      kernel_task, dmaOpts, kBounceBytes, 0x00000000FFFFF000ULL);
   if (!ringBuf_ || !bounceBuf_) {
-    IOLog("ExynosUfs: DMA buffer allocation failed\n");
+    kprintf("ExynosUfs: DMA buffer allocation failed\n");
     return false;
   }
-  bzero(ringBuf_->getBytesNoCopy(), 8192);
-  utrd_ = reinterpret_cast<Utrd *>(ringBuf_->getBytesNoCopy());
-  ucd_  = reinterpret_cast<Ucd *>(reinterpret_cast<uint8_t *>(utrd_) + 4096);
-  utrdPhys_   = ringBuf_->getPhysicalAddress();
+  if (ringBuf_->prepare(kIODirectionInOut) != kIOReturnSuccess ||
+      bounceBuf_->prepare(kIODirectionInOut) != kIOReturnSuccess) {
+    kprintf("ExynosUfs: DMA buffer prepare failed\n");
+    return false;
+  }
+
+  IOByteCount ringSegLen = 0;
+  IOByteCount bounceSegLen = 0;
+  utrdPhys_   = ringBuf_->getPhysicalSegment(0, &ringSegLen, kIOMemoryMapperNone);
+  bouncePhys_ = bounceBuf_->getPhysicalSegment(0, &bounceSegLen, kIOMemoryMapperNone);
+  if (!utrdPhys_ || ringSegLen < 8192 || !bouncePhys_ || bounceSegLen < kBounceBytes) {
+    kprintf("ExynosUfs: DMA physical segments invalid (ring=%llx/%llu bounce=%llx/%llu)\n",
+            static_cast<unsigned long long>(utrdPhys_),
+            static_cast<unsigned long long>(ringSegLen),
+            static_cast<unsigned long long>(bouncePhys_),
+            static_cast<unsigned long long>(bounceSegLen));
+    return false;
+  }
+  memset(ringBuf_->getBytesNoCopy(), 0, 8192);
+  utrd_       = reinterpret_cast<ExynosUfsUtrd *>(ringBuf_->getBytesNoCopy());
+  ucd_        = reinterpret_cast<ExynosUfsCmdDesc *>(
+      reinterpret_cast<uint8_t *>(utrd_) + 4096);
   ucdPhys_    = utrdPhys_ + 4096;
   bounceVirt_ = reinterpret_cast<uint8_t *>(bounceBuf_->getBytesNoCopy());
-  bouncePhys_ = bounceBuf_->getPhysicalAddress();
+  kprintf("ExynosUfs: DMA utrd=0x%llx ucd=0x%llx bounce=0x%llx\n",
+          static_cast<unsigned long long>(utrdPhys_),
+          static_cast<unsigned long long>(ucdPhys_),
+          static_cast<unsigned long long>(bouncePhys_));
 
-  // Stop existing UTRL, install our 1-slot UTRL ring, and re-enable
-  writeHci(REG_UTRLRSR, 0);
-  writeHci(REG_IE, 0);
-  writeHci(REG_IS, readHci(REG_IS));
-  writeVs(VS_TXPRDT_ENTRY_SIZE, kUfsBlockSize);
-  writeVs(VS_RXPRDT_ENTRY_SIZE, kUfsBlockSize);
-  writeVs(VS_UTRL_NEXUS_TYPE, 0xFFFFFFFFu);
-  writeHci(REG_UTRLBA, static_cast<uint32_t>(utrdPhys_ & 0xFFFFFFFFu));
-  writeHci(REG_UTRLBAU, static_cast<uint32_t>(utrdPhys_ >> 32));
-  writeHci(REG_UTRLRSR, 1);
+  // Drain any UEFI request, install our UTRL ring, and apply Exynos 9611 vendor setup
+  for (uint32_t i = 0; i < 10000 && readHci(kRegUtrldbr) != 0; ++i) {
+    IODelay(10);
+  }
+  writeHci(kRegUtrlrsr, 0u);
+  for (uint32_t i = 0; i < 1000 && (readHci(kRegUtrlrsr) & 1u) != 0; ++i) {
+    IODelay(10);
+  }
+  writeHci(kRegIe, 0u);
+  writeHci(kRegIs, readHci(kRegIs));
+  writeHci(kRegUtrlba, static_cast<uint32_t>(utrdPhys_ & 0xFFFFFFFFu));
+  writeHci(kRegUtrlbau, static_cast<uint32_t>(utrdPhys_ >> 32));
+  writeVs(kVsDataReorder, 0xAu);
+  writeHci(kRegUtrlrsr, 1u);
+  writeVs(kVsTxPrdtEntrySize, kSgBlockSizeBit);
+  writeVs(kVsRxPrdtEntrySize, kSgBlockSizeBit);
+  writeVs(kVsUtrlNexusType, 0xFFFFFFFFu);
 
   ioLock_ = IOLockAlloc();
-  if (!readCapacity16(0)) {
-    IOLog("ExynosUfs: READ CAPACITY(16) on LUN 0 failed\n");
+  if (!ioLock_) {
     return false;
   }
+
+  requestSense(0);
+  if (!readCapacity(0)) {
+    kprintf("ExynosUfs: READ CAPACITY on LUN 0 failed\n");
+    return false;
+  }
+  kprintf("ExynosUfs: LUN 0 online: %llu blocks x %u bytes\n",
+          static_cast<unsigned long long>(blockCount_), blockSize_);
   IOLog("ExynosUfs: LUN 0 online: %llu blocks x %u bytes\n",
-        (unsigned long long)blockCount_, blockSize_);
+        static_cast<unsigned long long>(blockCount_), blockSize_);
   parseShngroot();
-  registerService();
   return true;
 }
 
 void ExynosUfs::stop(IOService *provider) {
   if (hci_) {
-    writeHci(REG_UTRLRSR, 0);
+    writeHci(kRegUtrlrsr, 0u);
   }
   if (ioLock_) { IOLockFree(ioLock_); ioLock_ = nullptr; }
-  if (bounceBuf_) { bounceBuf_->release(); bounceBuf_ = nullptr; }
-  if (ringBuf_) { ringBuf_->release(); ringBuf_ = nullptr; }
+  if (bounceBuf_) { bounceBuf_->complete(); bounceBuf_->release(); bounceBuf_ = nullptr; }
+  if (ringBuf_) { ringBuf_->complete(); ringBuf_->release(); ringBuf_ = nullptr; }
   if (vsHciMap_) { vsHciMap_->release(); vsHciMap_ = nullptr; }
   if (hciMap_) { hciMap_->release(); hciMap_ = nullptr; }
-  IOBlockStorageDevice::stop(provider);
+  IOService::stop(provider);
 }
 
 IOReturn ExynosUfs::submitScsi(uint8_t lun, const uint8_t cdb[16],
                                bool isWrite, uint32_t xferBytes) {
-  bzero(utrd_, sizeof(Utrd));
-  bzero(ucd_, sizeof(Ucd));
-
-  uint32_t dd = 0;
-  if (xferBytes > 0) {
-    dd = isWrite ? (1u << 25) : (2u << 25); // 01b=Sys->Dev, 10b=Dev->Sys
+  if (xferBytes > kBounceBytes) {
+    return kIOReturnBadArgument;
   }
-  utrd_->dw0      = (1u << 28) | dd; // CT=1 (UFS Storage)
-  utrd_->ocs      = 0xFu;
-  utrd_->ucdba    = static_cast<uint32_t>(ucdPhys_ & 0xFFFFFFFFu);
-  utrd_->ucdbau   = static_cast<uint32_t>(ucdPhys_ >> 32);
-  utrd_->resp_off = 128 / 4;
-  utrd_->resp_len = 128 / 4;
-  utrd_->prdt_off = 256 / 4;
+  memset(utrd_, 0, sizeof(ExynosUfsUtrd));
+  memset(ucd_, 0, sizeof(ExynosUfsCmdDesc));
 
+  // Build Command UPIU (matches UfsDxe.c UfsWriteCmdUcd)
+  ucd_->command_upiu.header.type  = 0x01u; // UPIU_TRANSACTION_COMMAND
+  ucd_->command_upiu.header.flags = (xferBytes > 0) ? (isWrite ? 0x20u : 0x40u) : 0x00u;
+  ucd_->command_upiu.header.lun   = lun;
+  ucd_->command_upiu.header.tag   = 0u;
+  uint32_t dlenBe = OSSwapHostToBigInt32(xferBytes);
+  memcpy(&ucd_->command_upiu.tsf[0], &dlenBe, sizeof(dlenBe));
+  memcpy(&ucd_->command_upiu.tsf[4], cdb, 16);
+
+  // Build 4 KiB PRDT segments (matches UfsDxe.c UfsMapSg)
+  uint32_t sgSegs = 0;
   if (xferBytes > 0) {
-    utrd_->prdt_len = 1;
-    ucd_->prdt[0].base_lo  = static_cast<uint32_t>(bouncePhys_ & 0xFFFFFFFFu);
-    ucd_->prdt[0].base_hi  = static_cast<uint32_t>(bouncePhys_ >> 32);
-    ucd_->prdt[0].reserved = 0;
-    ucd_->prdt[0].size     = xferBytes - 1;
+    sgSegs = (xferBytes + kSgBlockSize - 1u) / kSgBlockSize;
+    for (uint32_t i = 0; i < sgSegs; ++i) {
+      uint64_t phys = bouncePhys_ + static_cast<uint64_t>(i) * kSgBlockSize;
+      uint32_t rem  = xferBytes - i * kSgBlockSize;
+      uint32_t seg  = (rem < kSgBlockSize) ? rem : kSgBlockSize;
+      ucd_->prd_table[i].base_addr  = static_cast<uint32_t>(phys & 0xFFFFFFFFu);
+      ucd_->prd_table[i].upper_addr = static_cast<uint32_t>(phys >> 32);
+      ucd_->prd_table[i].reserved   = 0u;
+      ucd_->prd_table[i].size       = seg - 1u;
+    }
   }
 
-  ucd_->cmd.txn_type = 0x01;
-  ucd_->cmd.flags    = (xferBytes > 0) ? (isWrite ? 0x20 : 0x40) : 0x00;
-  ucd_->cmd.lun      = lun;
-  ucd_->cmd.task_tag = 0;
-  ucd_->cmd.expected_xfer_len_be = OSSwapHostToBigInt32(xferBytes);
-  bcopy(cdb, ucd_->cmd.cdb, 16);
+  // Build UTRD in Exynos byte units (matches UfsDxe.c UfsUtpInit + UfsWriteUtrd)
+  uint32_t dd = kUtpNoData;
+  if (xferBytes > 0) {
+    dd = isWrite ? kUtpHostToDevice : kUtpDeviceToHost;
+  }
+  utrd_->dw[0]           = dd | kUtpScsiCommand | kUtpReqDescIntCmd;
+  utrd_->dw[2]           = 0x0Fu; // OCS_INVALID_COMMAND_STATUS
+  utrd_->cmd_desc_addr_l = static_cast<uint32_t>(ucdPhys_ & 0xFFFFFFFFu);
+  utrd_->cmd_desc_addr_h = static_cast<uint32_t>(ucdPhys_ >> 32);
+  utrd_->rsp_upiu_len    = kAlignedUpiuSize;
+  utrd_->rsp_upiu_off    = kAlignedUpiuSize;
+  if (xferBytes > 0) {
+    utrd_->prdt_len      = static_cast<uint16_t>(sgSegs * sizeof(ExynosUfsPrdt));
+    utrd_->prdt_off      = kAlignedUpiuSize * 2u;
+  } else {
+    utrd_->prdt_len      = 0u;
+    utrd_->prdt_off      = 0u;
+  }
 
-  __builtin_arm_dsb(0xf);
-  writeHci(REG_UTRLDBR, 1u);
+  // Clean+invalidate DMA structures and bounce buffer before ringing doorbell
+  exynosUfsFlushCache(utrd_, sizeof(ExynosUfsUtrd));
+  exynosUfsFlushCache(ucd_, sizeof(ExynosUfsCmdDesc));
+  if (xferBytes > 0) {
+    exynosUfsFlushCache(bounceVirt_, xferBytes);
+  }
+
+  // Clear pending IS, ensure SCSI nexus type, ring slot 0
+  uint32_t staleIs = readHci(kRegIs);
+  if (staleIs) {
+    writeHci(kRegIs, staleIs);
+  }
+  writeVs(kVsUtrlNexusType, 0xFFFFFFFFu);
+  writeHci(kRegUtrldbr, 1u);
 
   for (uint32_t i = 0; i < 500000; ++i) {
-    if ((readHci(REG_UTRLDBR) & 1u) == 0) {
-      __builtin_arm_dsb(0xf);
-      if ((utrd_->ocs & 0xFFu) != 0) {
+    uint32_t is = readHci(kRegIs);
+    if (is & kIsFatalMask) {
+      writeHci(kRegIs, is);
+      kprintf("ExynosUfs: fatal IS=0x%x cdb0=0x%02x\n", is, cdb[0]);
+      return kIOReturnIOError;
+    }
+    if ((is & kIsUtrcs) != 0 && (readHci(kRegUtrldbr) & 1u) == 0) {
+      writeHci(kRegIs, is);
+      exynosUfsFlushCache(utrd_, sizeof(ExynosUfsUtrd));
+      exynosUfsFlushCache(&ucd_->response_upiu, sizeof(ExynosUfsUpiu));
+      if (!isWrite && xferBytes > 0) {
+        exynosUfsFlushCache(bounceVirt_, xferBytes);
+      }
+      uint32_t ocs    = utrd_->dw[2] & 0xFFu;
+      uint8_t  resp   = ucd_->response_upiu.header.response;
+      uint8_t  scsiSt = ucd_->response_upiu.header.status;
+      if (ocs != 0 || resp != 0 || scsiSt != 0) {
+        kprintf("ExynosUfs: SCSI err cdb0=0x%02x ocs=0x%x resp=0x%x st=0x%x\n",
+                cdb[0], ocs, resp, scsiSt);
         return kIOReturnIOError;
       }
       return kIOReturnSuccess;
     }
     IODelay(2);
   }
-  writeHci(REG_UTRLCLR, ~1u);
+
+  uint32_t lastIs = readHci(kRegIs);
+  uint32_t lastDbr = readHci(kRegUtrldbr);
+  writeHci(kRegUtrlclr, ~1u);
+  if (lastIs) {
+    writeHci(kRegIs, lastIs);
+  }
+  kprintf("ExynosUfs: SCSI timeout cdb0=0x%02x IS=0x%x DBR=0x%x\n",
+          cdb[0], lastIs, lastDbr);
   return kIOReturnTimeout;
 }
 
-bool ExynosUfs::readCapacity16(uint8_t lun) {
+void ExynosUfs::requestSense(uint8_t lun) {
   uint8_t cdb[16] = {};
-  cdb[0]  = 0x9E; // SERVICE ACTION IN(16)
-  cdb[1]  = 0x10; // READ CAPACITY(16)
-  cdb[13] = 32;
-  if (submitScsi(lun, cdb, false, 32) != kIOReturnSuccess) {
+  cdb[0] = 0x03u; // REQUEST SENSE
+  cdb[4] = 18u;
+  memset(bounceVirt_, 0, 18);
+  (void)submitScsi(lun, cdb, false, 18u);
+}
+
+bool ExynosUfs::readCapacity(uint8_t lun) {
+  // First try READ CAPACITY(10) (exact command UfsDxe uses on SM-A515F)
+  uint8_t cdb10[16] = {};
+  cdb10[0] = 0x25u;
+  if (submitScsi(lun, cdb10, false, 8u) == kIOReturnSuccess) {
+    uint32_t lastLba32 = OSReadBigInt32(bounceVirt_, 0);
+    uint32_t blkLen    = OSReadBigInt32(bounceVirt_, 4);
+    if (lastLba32 != 0xFFFFFFFFu && blkLen >= 512u) {
+      blockCount_ = static_cast<uint64_t>(lastLba32) + 1ULL;
+      blockSize_  = blkLen;
+      return true;
+    }
+  }
+  // Fallback to READ CAPACITY(16)
+  uint8_t cdb16[16] = {};
+  cdb16[0]  = 0x9Eu; // SERVICE ACTION IN(16)
+  cdb16[1]  = 0x10u; // READ CAPACITY(16)
+  cdb16[13] = 32u;
+  if (submitScsi(lun, cdb16, false, 32u) != kIOReturnSuccess) {
     return false;
   }
   uint64_t lastLba = OSReadBigInt64(bounceVirt_, 0);
   uint32_t blkLen  = OSReadBigInt32(bounceVirt_, 8);
-  if (blkLen == 0) {
+  if (blkLen < 512u) {
     return false;
   }
-  blockCount_ = lastLba + 1;
+  blockCount_ = lastLba + 1ULL;
   blockSize_  = blkLen;
   return true;
-}
-
-IOReturn ExynosUfs::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block,
-                                     UInt64 nblks, IOStorageAttributes *,
-                                     IOStorageCompletion *completion) {
-  bool isWrite = (buffer->getDirection() == kIODirectionOut);
-  UInt64 doneBytes = 0;
-  IOReturn status = kIOReturnSuccess;
-
-  IOLockLock(ioLock_);
-  UInt64 remaining = nblks;
-  UInt64 curLba = block;
-  while (remaining > 0) {
-    UInt32 chunkBlks = static_cast<UInt32>(
-        remaining > (kBounceBytes / blockSize_) ? (kBounceBytes / blockSize_) : remaining);
-    UInt32 chunkBytes = chunkBlks * blockSize_;
-
-    if (isWrite) {
-      buffer->readBytes(doneBytes, bounceVirt_, chunkBytes);
-    }
-    uint8_t cdb[16] = {};
-    cdb[0] = isWrite ? 0x2A : 0x28; // WRITE(10) / READ(10)
-    OSWriteBigInt32(cdb, 2, static_cast<uint32_t>(curLba));
-    OSWriteBigInt16(cdb, 7, static_cast<uint16_t>(chunkBlks));
-
-    status = submitScsi(0, cdb, isWrite, chunkBytes);
-    if (status != kIOReturnSuccess) {
-      break;
-    }
-    if (!isWrite) {
-      buffer->writeBytes(doneBytes, bounceVirt_, chunkBytes);
-    }
-    doneBytes += chunkBytes;
-    curLba    += chunkBlks;
-    remaining -= chunkBlks;
-  }
-  IOLockUnlock(ioLock_);
-
-  IOStorage::complete(completion, status, doneBytes);
-  return kIOReturnSuccess;
 }
 
 IOReturn ExynosUfs::readWindowBytes(uint64_t byteOffset, uint64_t byteLen,
@@ -448,27 +617,32 @@ IOReturn ExynosUfs::readWindowBytes(uint64_t byteOffset, uint64_t byteLen,
   IOLockLock(ioLock_);
   IOReturn status = kIOReturnSuccess;
   uint64_t done = 0;
+  uint32_t maxChunkBlks = kBounceBytes / blockSize_;
   while (done < byteLen) {
     uint64_t curByte = byteOffset + done;
     uint64_t lba = curByte / blockSize_;
     uint32_t inBlkOff = static_cast<uint32_t>(curByte % blockSize_);
     uint64_t remBytes = byteLen - done;
-    uint32_t maxChunkBlks = kBounceBytes / blockSize_;
-    uint32_t needBlks = static_cast<uint32_t>((inBlkOff + remBytes + blockSize_ - 1) / blockSize_);
-    if (needBlks > maxChunkBlks) {
-      needBlks = maxChunkBlks;
-    }
+    uint64_t needBlks64 = (inBlkOff + remBytes + blockSize_ - 1u) / blockSize_;
+    uint32_t needBlks = (needBlks64 > maxChunkBlks)
+        ? maxChunkBlks
+        : static_cast<uint32_t>(needBlks64);
+
     uint8_t cdb[16] = {};
-    cdb[0] = 0x28; // READ(10)
+    cdb[0] = 0x28u; // READ(10)
     OSWriteBigInt32(cdb, 2, static_cast<uint32_t>(lba));
     OSWriteBigInt16(cdb, 7, static_cast<uint16_t>(needBlks));
     status = submitScsi(0, cdb, false, needBlks * blockSize_);
     if (status != kIOReturnSuccess) {
       break;
     }
-    uint32_t avail = needBlks * blockSize_ - inBlkOff;
+    uint32_t avail   = needBlks * blockSize_ - inBlkOff;
     uint32_t copyLen = (remBytes < avail) ? static_cast<uint32_t>(remBytes) : avail;
-    dst->writeBytes(done, bounceVirt_ + inBlkOff, copyLen);
+    IOByteCount written = dst->writeBytes(done, bounceVirt_ + inBlkOff, copyLen);
+    if (written != copyLen) {
+      status = kIOReturnIOError;
+      break;
+    }
     done += copyLen;
   }
   IOLockUnlock(ioLock_);
@@ -478,48 +652,65 @@ IOReturn ExynosUfs::readWindowBytes(uint64_t byteOffset, uint64_t byteLen,
 void ExynosUfs::parseShngroot() {
   // Measured SM-A515F 128 GB UFS userdata (sda32) first LBA = 2061568 (4096 B/LBA)
   constexpr uint64_t kUserdataFirstLba = 2061568ULL;
+  uint8_t *hdr = static_cast<uint8_t *>(IOMallocZero(4096));
+  if (!hdr) {
+    kprintf("ExynosUfs: out of memory allocating SHNGROOT header\n");
+    return;
+  }
+
   uint8_t cdb[16] = {};
-  cdb[0] = 0x28; // READ(10)
+  cdb[0] = 0x28u; // READ(10)
   OSWriteBigInt32(cdb, 2, static_cast<uint32_t>(kUserdataFirstLba));
-  OSWriteBigInt16(cdb, 7, 1);
+  OSWriteBigInt16(cdb, 7, 1u);
 
   IOLockLock(ioLock_);
   IOReturn st = submitScsi(0, cdb, false, blockSize_);
-  uint8_t hdr[4096];
   if (st == kIOReturnSuccess) {
-    bcopy(bounceVirt_, hdr, sizeof(hdr));
+    memcpy(hdr, bounceVirt_, 4096);
   }
   IOLockUnlock(ioLock_);
+
   if (st != kIOReturnSuccess) {
-    IOLog("ExynosUfs: failed to read SHNGROOT manifest at LBA %llu\n",
-          (unsigned long long)kUserdataFirstLba);
+    kprintf("ExynosUfs: failed to read SHNGROOT manifest at LBA %llu (0x%x)\n",
+            static_cast<unsigned long long>(kUserdataFirstLba),
+            static_cast<unsigned>(st));
+    IOFree(hdr, 4096);
     return;
   }
-  if (bcmp(hdr, "SHNGROOT", 8) != 0) {
-    IOLog("ExynosUfs: no SHNGROOT magic at LBA %llu\n",
-          (unsigned long long)kUserdataFirstLba);
+  if (memcmp(hdr, "SHNGROOT", 8) != 0) {
+    kprintf("ExynosUfs: no SHNGROOT magic at LBA %llu (got %02x%02x%02x%02x)\n",
+            static_cast<unsigned long long>(kUserdataFirstLba),
+            hdr[0], hdr[1], hdr[2], hdr[3]);
+    IOFree(hdr, 4096);
     return;
   }
+
   uint32_t version = OSReadLittleInt32(hdr, 8);
   uint32_t count   = OSReadLittleInt32(hdr, 12);
-  if (count > 16) {
-    count = 16;
+  if (count > 16u) {
+    count = 16u;
   }
+  kprintf("ExynosUfs: SHNGROOT v%u found (%u entries)\n", version, count);
   IOLog("ExynosUfs: SHNGROOT v%u found (%u entries)\n", version, count);
+
   uint64_t udBaseByte = kUserdataFirstLba * blockSize_;
   for (uint32_t i = 0; i < count; ++i) {
     const uint8_t *e = hdr + 24 + i * 128;
     char wname[33] = {};
-    bcopy(e, wname, 32);
+    memcpy(wname, e, 32);
     uint64_t woff  = OSReadLittleInt64(e, 32);
     uint64_t wsize = OSReadLittleInt64(e, 40);
     uint32_t wblk  = OSReadLittleInt32(e, 48);
     uint32_t wflg  = OSReadLittleInt32(e, 52);
-    if (wflg != 1 || wsize == 0) {
+    if (wflg != 1u || wsize == 0) {
       continue;
     }
-    IOLog("ExynosUfs: publishing SHNGROOT window '%s' off=0x%llx size=0x%llx blk=%u\n",
-          wname, (unsigned long long)woff, (unsigned long long)wsize, wblk);
+    kprintf("ExynosUfs: publishing window '%s' off=0x%llx size=0x%llx blk=%u\n",
+            wname, static_cast<unsigned long long>(woff),
+            static_cast<unsigned long long>(wsize), wblk);
+    IOLog("ExynosUfs: publishing window '%s' off=0x%llx size=0x%llx blk=%u\n",
+          wname, static_cast<unsigned long long>(woff),
+          static_cast<unsigned long long>(wsize), wblk);
     ExynosUfsWindow *win = OSTypeAlloc(ExynosUfsWindow);
     if (win && win->initWindow(this, wname, udBaseByte + woff, wsize, wblk)) {
       if (win->attach(this)) {
@@ -534,9 +725,10 @@ void ExynosUfs::parseShngroot() {
       win->release();
     }
   }
+  IOFree(hdr, 4096);
 }
 
-extern "C" void exynos_ufs_try_attach(void) {
+extern "C" void exynos_ufs_try_attach(void *fallbackProvider) {
   static bool attempted = false;
   if (attempted) {
     return;
@@ -545,11 +737,15 @@ extern "C" void exynos_ufs_try_attach(void) {
 
   IORegistryEntry *entry = IORegistryEntry::fromPath("/arm-io/ufs", gIODTPlane);
   IOService *provider = OSDynamicCast(IOService, entry);
+  bool releaseProvider = (provider != nullptr);
   if (!provider) {
     if (entry) {
       entry->release();
     }
-    IOLog("ExynosUfs: /arm-io/ufs IOService not found\n");
+    provider = reinterpret_cast<IOService *>(fallbackProvider);
+  }
+  if (!provider) {
+    kprintf("ExynosUfs: no provider available\n");
     return;
   }
   ExynosUfs *drv = OSTypeAlloc(ExynosUfs);
@@ -563,5 +759,7 @@ extern "C" void exynos_ufs_try_attach(void) {
   if (drv) {
     drv->release();
   }
-  provider->release();
+  if (releaseProvider) {
+    provider->release();
+  }
 }

@@ -108,14 +108,16 @@ jobs:
           done
           git -C ../UniXNU/drivers/ArmCpu apply --check "$PWD/patches/armcpu-gicv2.patch" && \
             git -C ../UniXNU/drivers/ArmCpu apply "$PWD/patches/armcpu-gicv2.patch"
+          cp "$PWD/scripts/bind-ram-block-storage.py" ../UniXNU/scripts/bind-ram-block-storage.py
           cp "$PWD/drivers/ExynosUfs/ExynosUfs.cpp" ../UniXNU/drivers/RamBlock/ExynosUfs.cpp
           printf '\n#include "ExynosUfs.cpp"\n' >> ../UniXNU/drivers/RamBlock/NativeRamBlock.cpp
           python3 -c '
           from pathlib import Path
           p = Path("../UniXNU/drivers/RamBlock/NativeRamBlock.cpp")
-          s = "extern \"C\" void exynos_ufs_try_attach(void);\n" + p.read_text()
-          s = s.replace("if (!IOBlockStorageDevice::start(provider)) return false;",
-                        "exynos_ufs_try_attach();\n  if (!IOBlockStorageDevice::start(provider)) return false;", 1)
+          s = "extern \"C\" void exynos_ufs_try_attach(void *fallbackProvider);\n" + p.read_text()
+          needle = "if (!IOBlockStorageDevice::start(provider)) return false;"
+          assert needle in s, "NativeRamBlock::start anchor missing"
+          s = s.replace(needle, "exynos_ufs_try_attach(provider);\n  " + needle, 1)
           p.write_text(s)
           '
           UNIXNU_DTB="$PWD/../UniXNU/out/a51/ipados-17.7.11-21H461/a51/device-tree/hardware.dtb" \
